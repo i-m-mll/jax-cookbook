@@ -1,5 +1,7 @@
 from collections.abc import Callable
+import dis
 from operator import attrgetter
+from typing import Any
 
 import jax
 import jax.tree as jt 
@@ -8,15 +10,57 @@ from jaxtyping import PyTree
 import equinox as eqx
 
 
-def _get_where_str(where_func: Callable) -> str:
-    """
-    Returns a string representation of the (nested) attributes accessed by a function.
+class _WhereStrConstructor:
 
-    Only works for functions that take a single argument, and return the argument
-    or a single (nested) attribute accessed from the argument.
+    def __init__(self, label: str = ""):
+        self.label = label
+
+    def __getitem__(self, key: Any):
+        if isinstance(key, str):
+            key = f"'{key}'"
+        elif isinstance(key, type):
+            key = key.__name__
+        return _WhereStrConstructor("".join([self.label, f"[{key}]"]))
+
+    def __getattr__(self, name: str):
+        sep = "." if self.label else ""
+        return _WhereStrConstructor(sep.join([self.label, name]))
+
+
+def _get_where_str_constructor_label(x: _WhereStrConstructor) -> str:
+    return x.label
+
+
+def where_func_to_strs(
+    where: Callable[[PyTree[..., 'T']], PyTree[..., 'S ...']]
+) -> PyTree[str, 'S']:
+    """Maps each leaf in the PyTree `where`
+    
+    Also similar to `_get_where_str` and `where_func_to_paths`, but:
+
+    - Avoids complicated logic of parsing bytecode, or traversing pytrees;
+    - Works for `where` functions that return arbitrary PyTrees of node references;
+    - Runs significantly (10+ times) faster than the other solutions.
     """
-    bytecode = dis.Bytecode(where_func)
-    return ".".join(instr.argrepr for instr in bytecode if instr.opname == "LOAD_ATTR")
+
+    try:
+        return jt.map(_get_where_str_constructor_label, where(_WhereStrConstructor()))
+    except TypeError:
+        raise TypeError("`where` must return a PyTree of node references")
+
+
+def where_attr_strs_to_func(tree: PyTree[str, 'S']) -> Callable[[Any], PyTree[Any, 'S ...']]:
+    """Reverse transformation to `where_func_to_labels`.
+
+    Takes a PyTree of strings representing attribute accesses on an object, and 
+    returns a function that given an object, returns a PyTree of attributes.
+    """
+    getters = jt.map(lambda s: attrgetter(s), tree)
+
+    def where_func(obj):
+        return jt.map(lambda g: g(obj), getters)
+
+    return where_func
 
 
 class _NodeWrapper:
@@ -33,13 +77,15 @@ class NodePath:
 
 
 def where_func_to_paths(
-    where: Callable[[PyTree[..., 'T']], PyTree[..., 'S']], 
+    where: Callable[[PyTree[..., 'T']], PyTree[..., 'S ...']], 
     tree: PyTree[..., 'T']
 ) -> PyTree[NodePath, 'S']:
-    """
+    """Maps each leaf in the body of `where` selecting a node in `tree`, 
+    to an iterable of `tree` path keys.
+    
     Similar to `_get_where_str`, but:
 
-    - returns node paths, not strings;
+    - returns iterables of path keys, not strings;
     - works for `where` functions that return arbitrary PyTrees of nodes;
     - works for arbitrary node access (e.g. dict keys, sequence indices)
       and not just attribute access.
@@ -71,50 +117,12 @@ def where_func_to_paths(
     return paths
 
 
-class _WhereStrConstructor:
-
-    def __init__(self, label: str = ""):
-        self.label = label
-
-    def __getitem__(self, key: Any):
-        if isinstance(key, str):
-            key = f"'{key}'"
-        elif isinstance(key, type):
-            key = key.__name__
-        return _WhereStrConstructor("".join([self.label, f"[{key}]"]))
-
-    def __getattr__(self, name: str):
-        sep = "." if self.label else ""
-        return _WhereStrConstructor(sep.join([self.label, name]))
-
-
-def _get_where_str_constructor_label(x: _WhereStrConstructor) -> str:
-    return x.label
-
-
-def where_func_to_labels(where: Callable) -> PyTree[str]:
-    """Also similar to `_get_where_str` and `where_func_to_paths`, but:
-
-    - Avoids complicated logic of parsing bytecode, or traversing pytrees;
-    - Works for `where` functions that return arbitrary PyTrees of node references;
-    - Runs significantly (10+ times) faster than the other solutions.
+def get_where_str(where_func: Callable) -> str:
     """
+    Returns a string representation of the (nested) attributes accessed by a function.
 
-    try:
-        return jt.map(_get_where_str_constructor_label, where(_WhereStrConstructor()))
-    except TypeError:
-        raise TypeError("`where` must return a PyTree of node references")
-
-
-def attr_str_tree_to_where_func(tree: PyTree[str]) -> Callable:
-    """Reverse transformation to `where_func_to_labels`.
-
-    Takes a PyTree of strings describing attribute accesses, and returns a function
-    that returns a PyTree of attributes.
+    Only works for functions that take a single argument, and perform a single sequence of
+    (at least zero) attribute accesses on the argument.
     """
-    getters = jt.map(lambda s: attrgetter(s), tree)
-
-    def where_func(obj):
-        return jt.map(lambda g: g(obj), getters)
-
-    return where_func
+    bytecode = dis.Bytecode(where_func)
+    return ".".join(instr.argrepr for instr in bytecode if instr.opname == "LOAD_ATTR")

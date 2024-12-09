@@ -57,52 +57,6 @@ T1 = TypeVar("T1")
 T2 = TypeVar("T2")
 
 
-class Timer:
-    """Context manager for timing code blocks.
-
-    Derived from https://stackoverflow.com/a/69156219
-    """
-
-    def __init__(self):
-        self.times = []
-
-    def __enter__(self, printout=False):
-        self.start_time = perf_counter()
-        self.printout = printout
-        return self  # Apparently you're supposed to only yield the key
-
-    def __exit__(self, *args, **kwargs):
-        self.time = perf_counter() - self.start_time
-        self.times.append(self.time)
-        self.readout = f"Time: {self.time:.3f} seconds"
-        if self.printout:
-            print(self.readout)
-
-    start = __enter__
-    stop = __exit__
-
-
-class TqdmLoggingHandler(logging.StreamHandler):
-    """Avoid tqdm progress bar interruption by logger's output to console.
-
-    Source: https://stackoverflow.com/a/67257516
-    """
-
-    # see logging.StreamHandler.eval method:
-    # https://github.com/python/cpython/blob/d2e2534751fd675c4d5d3adc208bf4fc984da7bf/Lib/logging/__init__.py#L1082-L1091
-    # and tqdm.write method:
-    # https://github.com/tqdm/tqdm/blob/f86104a1f30c38e6f80bfd8fb16d5fcde1e7749f/tqdm/std.py#L614-L620
-
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            _tqdm_write(msg, end=self.terminator)
-        except RecursionError:
-            raise
-        except Exception:
-            self.handleError(record)
-
-
 class StrAlwaysLT(str):
 
     def __lt__(self, other):
@@ -113,21 +67,6 @@ class StrAlwaysLT(str):
 
     # def __repr__(self):
     #     return self.replace("'", "")
-
-
-def identity_func(x):
-    """The identity function."""
-    return x
-
-
-def n_positional_args(func: Callable) -> int:
-    """Get the number of positional arguments of a function."""
-    sig = inspect.signature(func)
-    return sum(
-        1
-        for param in sig.parameters.values()
-        if param.kind == param.POSITIONAL_OR_KEYWORD
-    )
 
 
 def interleave_unequal(*args):

@@ -16,8 +16,8 @@ import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 import numpy as np
 
-from feedbax._progress import _tqdm, _tqdm_write
-from feedbax.misc import unique_generator, is_module, is_none, unzip2
+from ._progress import _tqdm, _tqdm_write
+from .misc import unique_generator, is_module
 
 
 logger = logging.getLogger(__name__)
@@ -237,10 +237,10 @@ def tree_set_scalar(
 
 def random_split_like_tree(
     key: PRNGKeyArray,
-    tree: PyTree[Any, "T"],
+    tree_or_treedef: PyTree[Any, "T"] | PyTreeDef,
     is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> PyTree[PRNGKeyArray | None, "T"]:
-    """Returns a split of random keys, as leaves of a target PyTree structure.
+    """Returns a split of random keys, as the leaves of a target PyTree structure.
 
     Derived from [this](https://github.com/google/jax/discussions/9508#discussioncomment-2144076) comment
     on a discussion in the JAX GitHub repository.
@@ -263,10 +263,11 @@ def _random_split_like_treedef(
     return jt.unflatten(treedef, keys)
 
 
+# TODO: Filter and combine non-array leaves
 def tree_stack(
     trees: Sequence[PyTree[Array, "T"]],
     axis: int = 0,
-) -> PyTree[Any, "T"]:
+) -> PyTree[Array, "T"]:
     """Returns a PyTree whose array leaves stack those of the PyTrees in `trees`.
 
     !!! Example
@@ -283,7 +284,6 @@ def tree_stack(
             leaves have the same shape.
         axis: The axis along which to stack the array leaves.
     """
-    # TODO: Filter and combine non-array leaves
     return jt.map(lambda *v: jnp.stack(v, axis=axis), *trees)
 
 

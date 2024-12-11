@@ -1,7 +1,7 @@
 [project]
-name = "PyTree Cookbook"
+name = "jax-cookbook"
 version = "0.1.0"
-description = "Recipes for working with PyTrees in JAX + Equinox."
+description = "A collection of recipes in JAX + Equinox."
 # url = ""
 authors = [
     {name = "MLL", email = "mail@mll.bio"}
@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = [
     'jax',
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.urls]
-repository = "https://github.com/i-m-mll/pytree_cookbook"
+repository = "https://github.com/i-m-mll/jax-cookbook"
 
 [project.optional-dependencies]
 typing = [
@@ -50,13 +50,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
-packages = ["pytree_cookbook"]
+packages = ["jax_cookbook"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["pytree_cookbook"]
+packages = ["jax_cookbook"]
 
 [tool.pyright]
-include = ["pytree_cookbook"]
+include = ["jax_cookbook"]
 exclude = ["**/__pycache__"]
 verboseOutput = true
 reportMissingImports = true
@@ -65,5 +65,5 @@ reportAttributeAccessIssue = false
 
 [tool.black]
 target-version = ['py310', 'py311', 'py312']
-include = 'pytree_cookbook\/.*\.pyi?$'
+include = 'jax_cookbook\/.*\.pyi?$'
 line-length = 88

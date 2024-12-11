@@ -8,39 +8,16 @@ from collections.abc import (
     Callable,
     Iterable,
     Mapping,
-    MutableMapping,
     MutableSequence,
     Sequence,
     Set,
 )
 import copy
-import difflib
-import dis
-from functools import wraps
-import inspect
 from itertools import zip_longest, chain
 import logging
-from operator import attrgetter
-import os
-from pathlib import Path, PosixPath
-from shutil import rmtree
-import subprocess
-import textwrap
-from time import perf_counter
-from types import ModuleType
-from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
+from typing import Any, Optional, Tuple, TypeVar, Union
 
-import equinox as eqx
-from equinox import Module
-from equinox._pretty_print import tree_pp, bracketed
-import jax
 import jax.numpy as jnp
-import jax._src.pretty_printer as pp
-import jax.tree_util as jtu
-import jax.tree as jt
-from jaxtyping import Float, Array, PyTree, Shaped
-
-from feedbax._progress import _tqdm_write
 
 
 logger = logging.getLogger(__name__)
@@ -89,7 +66,7 @@ def unzip2(xys: Iterable[Tuple[T1, T2]]) -> Tuple[Tuple[T1, ...], Tuple[T2, ...]
     return tuple(xs), tuple(ys)
 
 
-def get_unique_label(label: str, invalid_labels: Sequence[str] | Set[str]) -> str:
+def get_unique_label(label: str, invalid_labels: Union[Sequence[str], Set[str]]) -> str:
     """Get a unique string from a base string, while avoiding certain strings.
 
     Simply appends consecutive integers to the string until a unique string is

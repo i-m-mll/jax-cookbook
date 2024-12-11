@@ -5,7 +5,7 @@ import functools
 import itertools
 import logging
 import string
-from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, Union, get_type_hints
+from typing import Any, Optional, Tuple, TypeVar, Union
 
 import equinox as eqx
 import jax
@@ -16,8 +16,10 @@ import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 import numpy as np
 
+from ._types import is_module
 from ._progress import _tqdm, _tqdm_write
-from .misc import unique_generator, is_module
+from .misc import unique_generator 
+from ._func import is_type 
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-def apply_to_filtered_leaves(filter_spec=None, is_leaf=None):
+def filter_wrap(filter_spec=None, is_leaf=None):
     """Returns a decorator that ensures a function only operates on tree leaves satisfying `filter_spec`."""
     if filter_spec is None:
         filter_spec = lambda x: True
@@ -42,7 +44,7 @@ def apply_to_filtered_leaves(filter_spec=None, is_leaf=None):
     return decorator
 
 
-# An alternative to partition-combine logic in `apply_to_filtered_leaves` is to define a custom `tree_map` function
+# An alternative to partition-combine logic in `filter_wrap` is to define a custom `tree_map` function
 # that only applies the function to leaves that satisfy the filter spec.
 def tree_filter_map(f, tree, filter_func):
     def map_func(x):
@@ -61,15 +63,6 @@ def filter_spec_leaves(
         replace_fn=lambda x: True,
     )
     return filter_spec
-
-
-def tree_index(tree: PyTree[Any, "T"], index: int) -> PyTree[Any, "T"]:
-    """Returns the same PyTree, indexing out all of its array leaves."""
-    models_arrays, models_other = eqx.partition(tree, eqx.is_array)
-    return eqx.combine(
-        jt.map(lambda x: x[index], models_arrays),
-        models_other,
-    )
 
 
 def get_ensemble(
@@ -96,7 +89,7 @@ def get_ensemble(
 
 
 @jax.named_scope("fbx.tree_take")
-@apply_to_filtered_leaves(eqx.is_array)
+@filter_wrap(eqx.is_array)
 def tree_take(
     tree: PyTree[Array, "T"],
     indices: ArrayLike,
@@ -130,7 +123,7 @@ def tree_take(
 
 # TODO: Assess performance of `tree_take_multi`, then replace `tree_take`
 # (it is probably more performant to use `jax.lax.gather` here)
-@apply_to_filtered_leaves(eqx.is_array)
+@filter_wrap(eqx.is_array)
 def tree_take_multi(
     tree: PyTree[Array, "T"],
     indices: Union[ArrayLike, Sequence[ArrayLike]],
@@ -187,10 +180,10 @@ def tree_take_multi(
 
 @jax.named_scope("fbx.tree_set")
 def tree_set(
-    tree: PyTree[Any | Shaped[Array, "batch *?dims"], "T"],
-    values: PyTree[Any | Shaped[Array, "*?dims"], "T"],
+    tree: PyTree[Union[Any, Shaped[Array, "batch *?dims"]], "T"],
+    values: PyTree[Union[Any, Shaped[Array, "*?dims"]], "T"],
     idx: int,
-) -> PyTree[Any | Shaped[Array, "batch *?dims"], "T"]:
+) -> PyTree[Union[Any, Shaped[Array, "batch *?dims"]], "T"]:
     """Perform an out-of-place update of each array leaf of a PyTree.
 
     Non-array leaves are simply replaced by their matching leaves in `items`.
@@ -219,7 +212,7 @@ def tree_set(
     return eqx.combine(arrays_update, other_update)
 
 
-@apply_to_filtered_leaves(eqx.is_array)
+@filter_wrap(eqx.is_array)
 def tree_set_scalar(
     tree: PyTree[Array, "T"],
     value: Any,
@@ -237,9 +230,9 @@ def tree_set_scalar(
 
 def random_split_like_tree(
     key: PRNGKeyArray,
-    tree_or_treedef: PyTree[Any, "T"] | PyTreeDef,
+    tree_or_treedef: Union[PyTree[Any, "T"], PyTreeDef],
     is_leaf: Optional[Callable[[Any], bool]] = None,
-) -> PyTree[PRNGKeyArray | None, "T"]:
+) -> PyTree[Union[PRNGKeyArray, None], "T"]:
     """Returns a split of random keys, as the leaves of a target PyTree structure.
 
     Derived from [this](https://github.com/google/jax/discussions/9508#discussioncomment-2144076) comment
@@ -251,7 +244,10 @@ def random_split_like_tree(
         is_leaf: An optional function that decides whether each node in `tree`
             should be treated as a leaf, or traversed as a subtree.
     """
-    treedef = jt.structure(tree, is_leaf=is_leaf)
+    if not isinstance(tree_or_treedef, PyTreeDef):
+        treedef = jt.structure(tree_or_treedef, is_leaf=is_leaf)
+    else:
+        treedef = tree_or_treedef
     return _random_split_like_treedef(key, treedef)
 
 
@@ -383,6 +379,10 @@ def move_level_to_outside(tree, level_type):
 _TmpTuple = make_named_tuple_subclass("_TmpTuple")
 
 
+"""
+There might be a simpler solution, here.
+See https://gist.github.com/willwhitney/dd89cac6a5b771ccff18b06b33372c75?permalink_comment_id=4634557#gistcomment-4634557
+"""
 def tree_unstack(
     tree: PyTree[Any, "T"],
     axis: int = 0,
@@ -409,13 +409,13 @@ def tree_unstack(
         array_tuples_tree,
     )
 
-    # TODO: Maybe there's a way to modify `apply_to_filtered_leaves` to use `jt.map` -- then use it to wrap `tree_unstack`
+    # TODO: Maybe there's a way to modify `filter_wrap` to use `jt.map` -- then use it to wrap `tree_unstack`
     return tuple(eqx.combine(subtree, other) for subtree in tuple_of_array_trees)
 
 
 def _tree_unstack_multi(
     tree: PyTree[Any, "T"],
-    unstack_spec: Sequence[int] | dict[int, Sequence[Hashable]],
+    unstack_spec: Union[Sequence[int], dict[int, Sequence[Hashable]]],
 ):
     # TODO: Unstack one or more array dimensions into PyTree levels; either tuples or dicts (if keys are provided)
     # TODO: check that `Sequence[Hashable]` has the same length as the respective dimension
@@ -714,7 +714,7 @@ def tree_labels(
     tree: PyTree[Any, 'T'],
     join_with: str = '_',
     append_leaf: bool = False,
-    path_idx: int | slice = slice(None),
+    path_idx: Union[int, slice] = slice(None),
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> PyTree[str, 'T']:
     """Return a PyTree of labels based on each leaf's key path.
@@ -884,7 +884,7 @@ def tree_infer_batch_size(
     # TODO: Allow for `in_axes`-like control over which arrays will be checked
 
     arrays, treedef = jt.flatten(eqx.filter(tree, eqx.is_array), is_leaf=exclude)
-    array_lens: list[int | None] = [
+    array_lens: list[Optional[int]] = [
         arr.shape[0] if not exclude(arr) else None for arr in arrays
     ]
     array_lens_unique = set(x for x in array_lens if x is not None)

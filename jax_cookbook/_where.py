@@ -32,7 +32,7 @@ def _get_where_str_constructor_label(x: _WhereStrConstructor) -> str:
 
 
 def where_func_to_strs(
-    where: Callable[[PyTree[..., 'T']], PyTree[..., 'S ...']]
+    where: Callable[[PyTree[Any, 'T']], PyTree[Any, 'S ...']]
 ) -> PyTree[str, 'S']:
     """Maps each leaf in the PyTree `where`
     
@@ -77,8 +77,8 @@ class NodePath:
 
 
 def where_func_to_paths(
-    where: Callable[[PyTree[..., 'T']], PyTree[..., 'S ...']], 
-    tree: PyTree[..., 'T']
+    where: Callable[[PyTree[Any, 'T']], PyTree[Any, 'S ...']], 
+    tree: PyTree[Any, 'T']
 ) -> PyTree[NodePath, 'S']:
     """Maps each leaf in the body of `where` selecting a node in `tree`, 
     to an iterable of `tree` path keys.

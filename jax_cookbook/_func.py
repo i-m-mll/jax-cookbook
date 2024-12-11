@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from functools import reduce
 
 
 def anyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
@@ -24,6 +25,22 @@ def notf(func: Callable[..., bool]) -> Callable[..., bool]:
     return lambda *args, **kwargs: not func(*args, **kwargs)
 
 
+def compose(*funcs):
+    """Compose a sequence of functions from left to right.
+    
+    Args:
+        *funcs: Functions to compose, applied left to right (first to last)
+        
+    Returns:
+        Composite function, whose arguments are those of the first function in `funcs`,
+        and whose returns are those of the last.
+    """
+    def composite(f, g):
+        return lambda *args, **kwargs: g(f(*args, **kwargs))
+    
+    return reduce(composite, funcs)
+
+
 def is_type(*types) -> Callable[..., bool]:
     """Returns a function that returns `True` if the input is an instance of any of the given types."""
     return lambda x: any(isinstance(x, t) for t in types)
@@ -32,3 +49,8 @@ def is_type(*types) -> Callable[..., bool]:
 def is_not_type(*types) -> Callable[..., bool]:
     """Returns a function that returns `True` if the input is not an instance of any of the given types."""
     return lambda x: not is_type(*types)(x)
+
+
+def idf(x):
+    """The identity function."""
+    return x

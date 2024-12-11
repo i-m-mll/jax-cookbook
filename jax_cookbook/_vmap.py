@@ -1,7 +1,8 @@
 """For"""
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from functools import wraps
+from typing import Any, Optional, Union
 
 import equinox as eqx
 import jax 
@@ -10,7 +11,7 @@ from jaxtyping import PyTree
 
 def vmap_multi(
     func: Callable, 
-    in_axes_sequence: Sequence[PyTree[int | Callable[[Any], int] | None]],
+    in_axes_sequence: Sequence[PyTree[Union[int, Optional[Callable[[Any], int]]]]],
     vmap_func: Callable = eqx.filter_vmap,
 ):
     """Given a sequence of `in_axes`, construct a nested vmap of `func`."""

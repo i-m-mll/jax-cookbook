@@ -20,7 +20,6 @@ from ._tree import (
     tree_call,
     tree_concatenate,
     tree_infer_batch_size,
-    tree_index,
     tree_key_tuples,
     tree_labels,
     tree_labels_of_equal_leaves,

@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from functools import reduce
+from operator import not_
 
 
 def anyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
@@ -12,12 +13,16 @@ def anyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
 
     becomes `is_leaf=anyf(is_module, eqx.is_array)`.
     """
-    return lambda *args, **kwargs: any(f(*args, **kwargs) for f in funcs)
+    return lambda *args, **kwargs: any(
+        f(*args, **kwargs) for f in funcs
+    )
 
 
 def allf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
     """Returns a function that returns the logical intersection of boolean functions."""
-    return lambda *args, **kwargs: all(f(*args, **kwargs) for f in funcs)
+    return lambda *args, **kwargs: all(
+        f(*args, **kwargs) for f in funcs
+    )
 
 
 def notf(func: Callable[..., bool]) -> Callable[..., bool]:
@@ -35,6 +40,9 @@ def compose(*funcs):
         Composite function, whose arguments are those of the first function in `funcs`,
         and whose returns are those of the last.
     """
+    if len(funcs) == 1:
+        return funcs[0]
+    
     def composite(f, g):
         return lambda *args, **kwargs: g(f(*args, **kwargs))
     
@@ -43,14 +51,16 @@ def compose(*funcs):
 
 def is_type(*types) -> Callable[..., bool]:
     """Returns a function that returns `True` if the input is an instance of any of the given types."""
-    return lambda x: any(isinstance(x, t) for t in types)
+    return lambda x: any(
+        isinstance(x, t) for t in types
+    )
 
 
 def is_not_type(*types) -> Callable[..., bool]:
     """Returns a function that returns `True` if the input is not an instance of any of the given types."""
-    return lambda x: not is_type(*types)(x)
+    return compose(not_, is_type(*types))
 
 
-def idf(x):
+def identity(x):
     """The identity function."""
     return x

@@ -259,7 +259,7 @@ def _random_split_like_treedef(
     return jt.unflatten(treedef, keys)
 
 
-# TODO: Filter and combine non-array leaves
+@filter_wrap(eqx.is_array)
 def tree_stack(
     trees: Sequence[PyTree[Array, "T"]],
     axis: int = 0,
@@ -351,6 +351,9 @@ def make_named_dict_subclass(name):
 def move_level_to_outside(tree, level_type):
     """Move a level with the given type to the outside of the tree.
 
+    Assumes that all nodes at each level of the tree, up to the level
+    moved outwards, have the same structure as their siblings.
+
     This can be used similarly to `tree_transpose`, in some cases.
     However it is particularly useful for trees with multiple nested
     levels, where we only want to move one of the levels outwards,
@@ -362,18 +365,42 @@ def move_level_to_outside(tree, level_type):
     move_level_to_outside(a, list)
     >>> [((1,2), (5,6)), ((3,4), (7,8))]
     ```
-
-    Written with the help of Claude 3.5 Sonnet.
     """
-    outer_treedef = jt.structure(
-        jt.map(lambda x: 0, tree, is_leaf=is_type(level_type))
-    )
-    leaves = jt.leaves(tree, is_leaf=is_type(level_type))
-    transposed_elements = zip(*(tuple(t) for t in leaves))
-    return level_type(
-        jt.unflatten(outer_treedef, elements)
-        for elements in transposed_elements
-    )
+    leveldefs = ()
+    subtree = tree
+    children = [True]  # TODO
+    leaf_type = None
+    arity = None
+
+    while any(children):
+        children, sublevel_def = eqx.tree_flatten_one_level(subtree)
+        node_data = sublevel_def.node_data()
+        if node_data is None:
+            raise ValueError(f"Subtree of structure {sublevel_def} has no node data")
+        parent_type = node_data[0]
+        if level_type is parent_type:
+            leveldefs = (sublevel_def,) + leveldefs
+            leaf_type = type(children[0])
+            arity = sublevel_def.num_leaves
+            break
+        leveldefs = leveldefs + (sublevel_def,)
+        subtree = children[0]
+
+    if leaf_type is None:
+        return tree
+    
+    assert arity is not None
+
+    new_treedef = functools.reduce(lambda def1, def2: def1.compose(def2), leveldefs)
+
+    leaves = jt.leaves(tree, is_leaf=is_type(leaf_type))
+    new_leaves = [
+        x for xs in
+        [leaves[i::arity] for i in range(arity)]
+        for x in xs
+    ]
+
+    return jt.unflatten(new_treedef, new_leaves)
 
 
 _TmpTuple = make_named_tuple_subclass("_TmpTuple")
@@ -422,6 +449,7 @@ def _tree_unstack_multi(
     ...
 
 
+# TODO: Perform the stack at any specified level
 def tree_stack_inner(tree: PyTree, is_leaf: Optional[Callable] = None):
     """Stacks all the leaves of each first-level subtrees of a PyTree.
 
@@ -475,19 +503,19 @@ def _tree_map(
 S = TypeVar("S")
 
 
-def tree_map_module(
-    f: Callable[[Any], S],
-    tree: PyTree[Any, "T"],
-    *rest,
-) -> PyTree[S, "T"]:
-    """Custom `tree_map` that treats `eqx.Module`s as leaves.
+# def tree_map_module(
+#     f: Callable[[Any], S],
+#     tree: PyTree[Any, "T"],
+#     *rest,
+# ) -> PyTree[S, "T"]:
+#     """Custom `tree_map` that treats `eqx.Module`s as leaves.
 
-    This is a convenience for performing analyses involving mapping
-    repeatedly over PyTrees of `eqx.Module`, where it would be repetitive
-    to write `is_leaf=lambda x: isinstance(x, eqx.Module)` every time.
-    """
+#     This is a convenience for performing analyses involving mapping
+#     repeatedly over PyTrees of `eqx.Module`, where it would be repetitive
+#     to write `is_leaf=lambda x: isinstance(x, eqx.Module)` every time.
+#     """
 
-    return jt.map(f, tree, *rest, is_leaf=is_module)
+#     return jt.map(f, tree, *rest, is_leaf=is_module)
 
 
 # Horizontal rule
@@ -538,20 +566,20 @@ def tree_map_tqdm(
     return jt.map(_f, tree, labels, *rest, is_leaf=is_leaf)
 
 
-def tree_map_unzip(
-    f: Callable[..., Tuple[Any, ...]],
-    tree: PyTree[Any, "T"],
-    *rest: PyTree[Any, "T"],
-    is_leaf: Optional[Callable[[Any], bool]] = None,
-) -> Tuple[PyTree[Any, "T"], ...]:
-    """Maps a tuple-valued function over a PyTree. Returns a tuple of PyTrees.
+# def tree_map_unzip(
+#     f: Callable[..., Tuple[Any, ...]],
+#     tree: PyTree[Any, "T"],
+#     *rest: PyTree[Any, "T"],
+#     is_leaf: Optional[Callable[[Any], bool]] = None,
+# ) -> Tuple[PyTree[Any, "T"], ...]:
+#     """Maps a tuple-valued function over a PyTree. Returns a tuple of PyTrees.
 
-    For example, for a function `f(x) -> (y, z)`, we can do `ys, zs =
-    tree_map_unzip(f, xs)` where `ys`, `zs` are PyTrees, whereas with a normal
-    `tree_map` we'd get a single PyTree of tuples `(y, z)`.
-    """
-    results = jt.map(f, tree, *rest, is_leaf=is_leaf)
-    return tree_unzip(results)
+#     For example, for a function `f(x) -> (y, z)`, we can do `ys, zs =
+#     tree_map_unzip(f, xs)` where `ys`, `zs` are PyTrees, whereas with a normal
+#     `tree_map` we'd get a single PyTree of tuples `(y, z)`.
+#     """
+#     results = jt.map(f, tree, *rest, is_leaf=is_leaf)
+#     return tree_unzip(results)
 
 
 def tree_unzip(
@@ -806,8 +834,6 @@ def _equal_or_allclose(a, b, rtol, atol):
         if not a.shape == b.shape:
             return False
         return np.allclose(a, b, rtol=rtol, atol=atol)
-    elif type(a) != type(b):
-        return False
     else:
         return a == b
 
@@ -883,9 +909,9 @@ def tree_infer_batch_size(
     """
     # TODO: Allow for `in_axes`-like control over which arrays will be checked
 
-    arrays, treedef = jt.flatten(eqx.filter(tree, eqx.is_array), is_leaf=exclude)
+    leaves, treedef = jt.flatten(eqx.filter(tree, eqx.is_array), is_leaf=exclude)
     array_lens: list[Optional[int]] = [
-        arr.shape[0] if not exclude(arr) else None for arr in arrays
+        leaf.shape[0] if not exclude(leaf) else None for leaf in leaves
     ]
     array_lens_unique = set(x for x in array_lens if x is not None)
     if not len(array_lens_unique) == 1:
@@ -911,3 +937,5 @@ def leaves_of_type(leaf_type, tree):
         ),
         is_leaf=is_type(leaf_type),
     )
+    
+    # return [x for x in jt.leaves(tree, is_leaf=is_type(leaf_type)) if isinstance(x, leaf_type)]

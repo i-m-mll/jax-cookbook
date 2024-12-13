@@ -1,9 +1,3 @@
-"""Tools which did not belong any particular other place.
-
-:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
-:license: Apache 2.0, see LICENSE for details.
-"""
-
 from collections.abc import (
     Callable,
     Iterable,

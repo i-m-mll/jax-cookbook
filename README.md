@@ -1,12 +1,12 @@
 # JAX Cookbook
 
-I often find myself manipulating PyTrees in ways not directly provided by the [JAX API](https://jax.readthedocs.io/en/latest/jax.html), or by any other single package I've found.
+I often find myself manipulating PyTrees in a number of ways not directly provided by the [JAX API](https://jax.readthedocs.io/en/latest/jax.html), or by any other single package I've found.
 
 This is a collection of some of the patterns I've found repeatedly useful.
 
 If you're unfamiliar with Equinox, I hope you'll [check it out](https://docs.kidger.site/equinox/). Its central feature is `equinox.Module`, an elegant way to represent your models as nested, callable dataclasses. 
 
-TODO: Link to feedbax docs? (Did I describe this in more detail?)
+TODO: Link to feedbax docs? (Did I describe this there in more detail?)
 
 ## Installation
 
@@ -18,9 +18,13 @@ TODO: mkdocs
 
 ### Filter-combine decorator
 
-By decorating a function whose first argument is a PyTree with `filter_wrap`, we can ensure the function is only applied to leaves that satisfy a certain condition.
+By decorating a function whose first argument is a PyTree with `filter_wrap`, the function is only applied to leaves that satisfy a certain condition.
 
 ```python
+import jax.numpy as jnp
+import jax.tree as jt
+
+
 tree = [jnp.zeros((3, 4)), 'smeeth']
 
 tree_flat = jt.map(jnp.ravel, tree)  
@@ -33,9 +37,11 @@ def flatten_leaves(tree: PyTree[Array]) -> PyTree[Array]:
 tree_flat = flatten_array_leaves(tree)  # [jnp.zeros((12,)), 'smeeth']
 ```
 
-Note that we can type annotate the decorated function as operating on a PyTree of arrays, since all of the tree's non-array leaves will be `None`.
+Note that we can type annotate the decorated function as operating on a PyTree of arrays, as all of the original tree's non-array leaves will be passed as`None`.
 
 Several of the other functions in this cookbook are wrapped this way, since it is a common pattern to operate only on leaves of a certain type. 
+
+### 
 
 ### Where-function parsing and construction
 
@@ -79,4 +85,4 @@ where_trainable_parsed = where_attr_strs_to_func(where_trainable_strs)
 # for all x, where_trainable_parsed(x) is where_trainable(x) 
 ```
 
-Currently, this only works for where-functions based on attribute accesses, such as those where-functions you'd typically use to select model parameters in a `equinox.Module`-based PyTree. However, maybe you have a where-function which refers to indices of sequences, or keys of dicts, and so on. If you only need to convert it to a string representation, then `where_func_to_labels` may work; but if you need to generate a working where-function from strings, the strings cannot contain indexing notation or other kinds of non-attribute access. 
+Currently this only works for where-functions based on attribute accesses, such as those where-functions you'd typically use to select model parameters in a `equinox.Module`-based PyTree. However, maybe you have a where-function which refers to indices of sequences, or keys of dicts, and so on. If you only need to convert it to a string representation, then `where_func_to_labels` may work; but if you need to generate a working where-function from strings, the strings cannot contain indexing notation or other kinds of non-attribute access. 

@@ -1,3 +1,3 @@
 # Vmap operations
 
-::: jax_cookbook.vmap_multi
+::: jax_cookbook.vmap_mult

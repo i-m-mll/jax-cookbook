@@ -1,7 +1,7 @@
 [project]
 name = "jax-cookbook"
 version = "0.1.0"
-description = "A collection of recipes in JAX + Equinox."
+description = "Some recipes in JAX + Equinox."
 # url = ""
 authors = [
     {name = "MLL", email = "mail@mll.bio"}

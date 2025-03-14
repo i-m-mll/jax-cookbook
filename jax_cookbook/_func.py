@@ -48,6 +48,8 @@ def compose(*funcs):
     
     return reduce(composite, funcs)
 
+    # return reduce(lambda f, g: lambda x: g(f(x)), funcs)
+
 
 def is_type(*types) -> Callable[..., bool]:
     """Returns a function that returns `True` if the input is an instance of any of the given types."""

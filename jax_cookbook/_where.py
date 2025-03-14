@@ -11,7 +11,6 @@ import equinox as eqx
 
 
 class _WhereStrConstructor:
-
     def __init__(self, label: str = ""):
         self.label = label
 
@@ -35,12 +34,10 @@ def where_func_to_strs(
     where: Callable[[PyTree[Any, 'T']], PyTree[Any, 'S ...']]
 ) -> PyTree[str, 'S']:
     """Maps each leaf in the PyTree `where`
-    
-    Also similar to `_get_where_str` and `where_func_to_paths`, but:
 
     - Avoids complicated logic of parsing bytecode, or traversing pytrees;
     - Works for `where` functions that return arbitrary PyTrees of node references;
-    - Runs significantly (10+ times) faster than the other solutions.
+    - Runs significantly (10+ times) faster than other solutions I've tried.
     """
 
     try:

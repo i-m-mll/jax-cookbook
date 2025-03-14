@@ -38,7 +38,8 @@ def filter_wrap(filter_spec=None, is_leaf=None):
         def wrapper(tree: PyTree, *args, **kwargs):
             filtered, other = eqx.partition(tree, filter_spec, is_leaf=is_leaf)
             updated = func(filtered, *args, **kwargs)
-            return eqx.combine(updated, other, is_leaf=is_leaf)
+            #? `other` comes first because leaves may have become subtrees in `updated`
+            return eqx.combine(other, updated, is_leaf=is_leaf)
 
         return wrapper
     return decorator
@@ -259,7 +260,7 @@ def _random_split_like_treedef(
     return jt.unflatten(treedef, keys)
 
 
-@filter_wrap(eqx.is_array)
+# @filter_wrap(eqx.is_array)
 def stack(
     trees: Sequence[PyTree[Array, "T"]],
     axis: int = 0,
@@ -283,12 +284,15 @@ def stack(
     return jt.map(lambda *v: jnp.stack(v, axis=axis), *trees)
 
 
-def stack_subtrees(tree: PyTree[Array], subtree_type):
-    """
-    This only works if all the leaves in a given subtree have the same shape, I think.
+def stack_subtrees(
+    tree: PyTree[Array], 
+    subtree_type: type[PyTree[Array]],
+    is_leaf: Optional = None,
+):
+    """Map each node of `subtree_type` to the array of all its array leaves, stacked.
     """
     return jt.map(
-        lambda subtree: jnp.stack(jt.leaves(subtree), axis=0),
+        lambda subtree: jnp.stack(jt.leaves(subtree, is_leaf=is_leaf), axis=0),
         tree,
         is_leaf=is_type(subtree_type),
     )
@@ -626,7 +630,7 @@ def unzip(
     return tuple_cls(jt.unflatten(treedef, x) for x in tree_flat_unzipped)
 
 
-def zip(
+def zip_(
     *trees: PyTree[Any, "T"],
     is_leaf=None,
     zip_cls=tuple,
@@ -733,23 +737,24 @@ def struct_bytes(tree: PyTree[jax.ShapeDtypeStruct]) -> int:
 BuiltInKeyEntry = Union[jtu.DictKey, jtu.SequenceKey, jtu.GetAttrKey, jtu.FlattenedIndexKey]
 
 
-def _node_key_to_label(node_key: BuiltInKeyEntry) -> str:
+def node_key_to_value(node_key: BuiltInKeyEntry) -> Any:
+    """Given a node key, return its value."""
     if isinstance(node_key, jtu.DictKey):
-        label = str(node_key.key)
+        value = node_key.key
     elif isinstance(node_key, jtu.SequenceKey):
-        label = str(node_key.idx)
+        value = node_key.idx
     elif isinstance(node_key, jtu.GetAttrKey):
-        label = str(node_key.name)
+        value = node_key.name
     elif isinstance(node_key, jtu.FlattenedIndexKey):
-        label = str(node_key.key)
+        value = node_key.key
     else:
         raise ValueError(f"Unknown PyTree node key type: {type(node_key)}")
-    return label
+    return value
 
 
 def _path_to_label(path: Sequence[BuiltInKeyEntry], join_with: str) -> str:
     # TODO: format based on key type; e.g. f"[{idx}]" for SequenceKey
-    return join_with.join(map(_node_key_to_label, path))
+    return join_with.join(map(lambda k: str(node_key_to_value(k)), path))
 
 
 def labels(
@@ -833,7 +838,7 @@ def key_tuples(
     leaves_with_path, treedef = jtu.tree_flatten_with_path(tree, is_leaf=is_leaf)
     paths, leaves = zip(*leaves_with_path)
     if keys_to_strs:
-        leaves = jt.map(_node_key_to_label, paths)
+        leaves = jt.map(lambda k: str(node_key_to_value(k)), paths)
     else:
         leaves = paths
     return jt.unflatten(treedef, leaves)

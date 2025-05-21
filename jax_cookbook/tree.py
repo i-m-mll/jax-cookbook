@@ -287,12 +287,12 @@ def stack(
 def stack_subtrees(
     tree: PyTree[Array], 
     subtree_type: type[PyTree[Array]],
-    is_leaf: Optional = None,
+    axis: int = 0,
 ):
     """Map each node of `subtree_type` to the array of all its array leaves, stacked.
     """
     return jt.map(
-        lambda subtree: jnp.stack(jt.leaves(subtree, is_leaf=is_leaf), axis=0),
+        lambda subtree: jnp.stack(jt.leaves(subtree), axis=axis),
         tree,
         is_leaf=is_type(subtree_type),
     )
@@ -363,7 +363,13 @@ def make_named_dict_subclass(name):
     return cls
 
 
-# TODO: The is a variant of this for pure array trees, that collapses the 
+@filter_wrap(eqx.is_array)
+def shapes(tree):
+    """Returns a tree of the shapes of the leaves of `tree`."""
+    return jax.tree_map(lambda x: x.shape, tree)
+
+
+# TODO: There could be a variant of this for pure array trees, that collapses the 
 # tree into a single array and uses `moveaxis`
 # TODO: There is also a way to modify this so that we don't need to assume 
 # the tree structure is totally consistent, I think. Only that all the nodes
@@ -392,8 +398,10 @@ def move_level_to_outside(tree, level_type):
     leaf_type = None
     arity = None
 
-    while any(children):
+    while children:
         children, sublevel_def = eqx.tree_flatten_one_level(subtree)
+        if children == [subtree]:
+            break     
         node_data = sublevel_def.node_data()
         if node_data is None:
             raise ValueError(f"Subtree of structure {sublevel_def} has no node data")
@@ -746,10 +754,49 @@ def node_key_to_value(node_key: BuiltInKeyEntry) -> Any:
     elif isinstance(node_key, jtu.GetAttrKey):
         value = node_key.name
     elif isinstance(node_key, jtu.FlattenedIndexKey):
-        value = node_key.key
+        value = node_key.idx
     else:
-        raise ValueError(f"Unknown PyTree node key type: {type(node_key)}")
+        raise ValueError(f"Unsupported node key type: {type(node_key)}")
     return value
+
+
+def get_child_node_given_key(parent_node: Any, key: BuiltInKeyEntry):
+    """Access a child from a parent node given an appropriate key path element."""
+    if isinstance(key, jtu.DictKey):
+        return parent_node[key.key]
+    elif isinstance(key, jtu.SequenceKey):
+        return parent_node[key.idx]
+    elif isinstance(key, jtu.GetAttrKey):
+        # For NamedTupleKey, getattr(node, key.name) is generally how JAX derives paths.
+        return getattr(parent_node, key.name)
+    elif isinstance(key, jtu.FlattenedIndexKey):
+        leaves, _ = eqx.tree_flatten_one_level(parent_node)
+        return leaves[key.idx]
+    else:
+        raise ValueError(f"Unsupported node key type: {type(key)}")
+    
+    
+def leaves_with_annotated_path(
+    tree: PyTree, 
+    annotation_func: Optional[Callable[[Any], T]] = type,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+) -> list[tuple[tuple[tuple[T, BuiltInKeyEntry], ...], Any]]:
+    """Gets the leaves of a PyTree like `jax.tree.leaves_with_path`, also returning their node type paths. 
+    """
+    key_paths, leaves = zip(*jt.leaves_with_path(tree, is_leaf=is_leaf))
+    annotated_key_paths = []
+    
+    for key_path in key_paths:
+        current_node = tree 
+        annotations_path = [annotation_func(current_node)]
+        
+        for key in key_path:
+            current_node = get_child_node_given_key(current_node, key)
+            annotations_path.append(annotation_func(current_node))
+        
+        annotated_key_paths.append(tuple(zip(annotations_path, key_path)))
+    
+    return list(zip(annotated_key_paths, leaves))
 
 
 def _path_to_label(path: Sequence[BuiltInKeyEntry], join_with: str) -> str:

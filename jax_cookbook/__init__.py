@@ -13,6 +13,9 @@ from ._io import save, load, load_with_hyperparameters, arrays_to_lists
 from ._vmap import (
     unkwarg_key,
     vmap_multi, 
+    natural_to_sequential_axes,
+    MultiVmapAxes,
+    expand_axes_spec,
 )
 
 from ._func import (
@@ -23,7 +26,6 @@ from ._func import (
     identity,
     is_not_type,
     is_type,
-    
 )
 
 from ._where import (

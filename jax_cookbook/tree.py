@@ -783,7 +783,11 @@ def leaves_with_annotated_path(
 ) -> list[tuple[tuple[tuple[T, BuiltInKeyEntry], ...], Any]]:
     """Gets the leaves of a PyTree like `jax.tree.leaves_with_path`, also returning their node type paths. 
     """
-    key_paths, leaves = zip(*jt.leaves_with_path(tree, is_leaf=is_leaf))
+    leaves_with_path = jt.leaves_with_path(tree, is_leaf=is_leaf)
+    if not leaves_with_path:
+        return []
+    
+    key_paths, leaves = zip(*leaves_with_path)
     annotated_key_paths = []
     
     for key_path in key_paths:

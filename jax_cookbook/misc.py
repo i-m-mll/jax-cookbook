@@ -7,10 +7,12 @@ from collections.abc import (
     Set,
 )
 import copy
+from functools import wraps
 from itertools import zip_longest, chain
 import logging
 from typing import Any, Optional, Tuple, TypeVar, Union
 
+import jax
 import jax.numpy as jnp
 
 
@@ -109,5 +111,35 @@ def nested_dict_update(dict_, *args, make_copy: bool = True):
     return dict_
 
 
+def crop_to_shortest(*, axis: int):
+    """Decorator that equalises the length of all array arguments along *axis*.
 
+    When the wrapped function is called, each positional argument that has a
+    ``shape`` attribute is inspected; the minimum length along *axis* is
+    computed, and every such argument is sliced to this length with
+    ``jax.lax.slice_in_dim``.  Non-array arguments (scalars, objects, etc.) are
+    passed through untouched.
+    """
 
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Determine minimal size along the axis among array args.
+            sizes = [a.shape[axis] for a in args if hasattr(a, "shape")]
+            if not sizes:
+                # No array arguments; nothing to crop.
+                return func(*args, **kwargs)
+
+            min_len = min(sizes)
+
+            def _crop(a): 
+                if hasattr(a, "shape") and a.shape[axis] != min_len:
+                    return jax.lax.slice_in_dim(a, 0, min_len, axis=axis)
+                return a
+
+            cropped_args = tuple(_crop(a) for a in args)
+            return func(*cropped_args, **kwargs)
+
+        return wrapper
+
+    return decorator

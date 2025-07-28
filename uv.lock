@@ -224,6 +224,11 @@ typing = [
     { name = "typeguard" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "coverage", marker = "extra == 'tests'" },
@@ -237,6 +242,9 @@ requires-dist = [
     { name = "typeguard", marker = "extra == 'typing'" },
 ]
 provides-extras = ["typing", "tests"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.3.5" }]
 
 [[package]]
 name = "jaxlib"

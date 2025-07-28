@@ -662,12 +662,17 @@ def zip_named(
     return zipped, LeafTuple
 
 
-def prefix_expand(prefix: PyTree, tree: PyTree, is_leaf: Optional[Callable] = None):
+def prefix_expand(
+    prefix: PyTree, 
+    tree: PyTree, 
+    is_leaf: Optional[Callable] = None, 
+    is_leaf_prefix: Optional[Callable] = None,
+) -> PyTree:
     """Expands a prefix of a PyTree to have the same structure as the PyTree.
     """
     def expand_leaf(leaf, subtree):
         return jt.map(lambda _: leaf, subtree, is_leaf=is_leaf)
-    return jt.map(expand_leaf, prefix, tree, is_leaf=is_leaf)
+    return jt.map(expand_leaf, prefix, tree, is_leaf=is_leaf_prefix)
 
 
 def _character_generator():

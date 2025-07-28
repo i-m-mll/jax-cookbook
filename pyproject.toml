@@ -67,3 +67,8 @@ reportAttributeAccessIssue = false
 target-version = ['py310', 'py311', 'py312']
 include = 'jax_cookbook\/.*\.pyi?$'
 line-length = 88
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]

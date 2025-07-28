@@ -82,15 +82,7 @@ import types
 import re
 from collections import OrderedDict
 from typing import Any, Dict, Set, Tuple
-
-# --------------------------------------------------------------------------- #
-# -- JAX tree.leaves helper (safe if JAX absent)                              #
-# --------------------------------------------------------------------------- #
-try:
-    from jax.tree_util import leaves as _jax_leaves
-except Exception:  # pragma: no cover
-    def _jax_leaves(x):            # type: ignore[return-value]
-        raise TypeError            # treat anything as non-PyTree
+import jax.tree as jt
 
 
 def _walk(v: Any) -> list[Any]:
@@ -98,11 +90,10 @@ def _walk(v: Any) -> list[Any]:
     Yield *v* itself **plus** all its PyTree leaves (if any),
     with duplicates removed (by object identity).
     """
-    items = [v]
-    try:
-        items.extend(_jax_leaves(v))
-    except Exception:
-        pass
+    items = jt.leaves(v)
+    
+    if callable(v):
+        items.append(v)
 
     uniq, seen = [], set()
     for obj in items:
@@ -230,8 +221,8 @@ def _collect_parts(
                 _collect_parts(
                     leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
                 )
-            if not callable(v):
-                blob.extend(_bytes_for_constant(v))
+                if not callable(leaf):
+                    blob.extend(_bytes_for_constant(leaf))
         parts[f"defaults:{id(func)}"] = bytes(blob)
 
     # 4) closure cells (include names only when >1 cell) ------------------ #
@@ -246,8 +237,8 @@ def _collect_parts(
                 _collect_parts(
                     leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
                 )
-            if not callable(val):
-                blob.extend(_bytes_for_constant(val))
+                if not callable(leaf):
+                    blob.extend(_bytes_for_constant(leaf))
         parts[f"closure:{id(func)}"] = bytes(blob)
 
     # 5) referenced globals ---------------------------------------------- #
@@ -262,8 +253,8 @@ def _collect_parts(
                     _collect_parts(
                         leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
                     )
-                if not callable(val):
-                    blob.extend(_bytes_for_constant(val))
+                    if not callable(leaf):
+                        blob.extend(_bytes_for_constant(leaf))
         parts[f"globals:{id(func)}"] = bytes(blob)
 
     # 6) instance state (callable-class) ---------------------------------- #
@@ -276,8 +267,9 @@ def _collect_parts(
                 _collect_parts(
                     leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
                 )
-            if not callable(v):
-                blob.extend(_bytes_for_constant(v))
+                if not callable(leaf):
+                    print("oh dear", leaf)
+                    blob.extend(_bytes_for_constant(leaf))
         parts[f"state:{id(obj)}"] = bytes(blob)
 
     return parts

@@ -26,6 +26,7 @@ from ._func import (
     identity,
     is_not_type,
     is_type,
+    hash_callable,
 )
 
 from ._where import (
@@ -36,4 +37,10 @@ from ._where import (
 from ._types import (
     is_module,
     is_none,
+)
+
+from ._array import (
+    ArrayLikeWrapper,
+    unwrap_arraylikes,
+    unwrap_arraylikes_and_labels,
 )

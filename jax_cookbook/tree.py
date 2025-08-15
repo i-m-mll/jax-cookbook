@@ -5,7 +5,7 @@ import functools
 import itertools
 import logging
 import string
-from typing import Any, Optional, Tuple, TypeVar, Union
+from typing import Any, Iterable, Optional, Tuple, TypeVar, Union, cast, overload
 
 import equinox as eqx
 import jax
@@ -93,7 +93,7 @@ def get_ensemble(
 @filter_wrap(eqx.is_array)
 def take(
     tree: PyTree[Array, "T"],
-    indices: ArrayLike,
+    indices: ArrayLike | Sequence[int],
     axis: int = 0,
     **kwargs: Any,
 ) -> PyTree[Any, "T"]:
@@ -117,7 +117,7 @@ def take(
         A PyTree with the same structure as `tree`, where array leaves from `tree` have been replaced by indexed-out elements.
     """
     return jt.map(
-        lambda xs: jnp.take(xs, indices, axis=axis, **kwargs),
+        lambda xs: jnp.take(xs, jnp.array(indices), axis=axis, **kwargs),
         tree,
     )
 
@@ -286,7 +286,7 @@ def stack(
 
 def stack_subtrees(
     tree: PyTree[Array], 
-    subtree_type: type[PyTree[Array]],
+    is_subtree: Callable[[Any], bool],
     axis: int = 0,
 ):
     """Map each node of `subtree_type` to the array of all its array leaves, stacked.
@@ -294,7 +294,7 @@ def stack_subtrees(
     return jt.map(
         lambda subtree: jnp.stack(jt.leaves(subtree), axis=axis),
         tree,
-        is_leaf=is_type(subtree_type),
+        is_leaf=is_subtree,
     )
 
 
@@ -366,7 +366,7 @@ def make_named_dict_subclass(name):
 @filter_wrap(eqx.is_array)
 def shapes(tree):
     """Returns a tree of the shapes of the leaves of `tree`."""
-    return jax.tree_map(lambda x: x.shape, tree)
+    return jt.map(lambda x: x.shape, tree)
 
 
 # TODO: There could be a variant of this for pure array trees, that collapses the 
@@ -610,10 +610,39 @@ def map_unzip(
     return unzip(results)
 
 
+
+TupleT = TypeVar("TupleT", bound=tuple)
+
+
+def _construct_tuple_like(cls: type[TupleT], elems: Iterable[Any]) -> TupleT:
+    # Fast path for the builtin tuple
+    if cls is tuple:
+        return cast(TupleT, tuple(elems))
+
+    # NamedTuple/collections.namedtuple provide _make(iterable)
+    make = getattr(cls, "_make", None)
+    if callable(make):
+        return cast(TupleT, make(elems))
+
+    # Generic fallback:
+    # 1) try positional args (NamedTuple-like)
+    try:
+        return cast(TupleT, cls(*elems))
+    except TypeError as e1:
+        # 2) try single iterable (plain tuple subclasses that inherit tuple.__new__)
+        try:
+            return cast(TupleT, cls(elems))
+        except TypeError:
+            raise TypeError(
+                f"Cannot construct {cls.__name__} from elements; "
+                "tried cls(*elems) and cls(elems)."
+            ) from e1
+
+
 def unzip(
     tree: PyTree[Tuple[Any, ...], "T"],
-    tuple_cls: type = tuple,
-) -> Tuple[PyTree[Any, "T"], ...]:
+    tuple_cls: type[TupleT] = tuple,
+) -> TupleT:
     """Unzips a PyTree of tuples into a tuple of PyTrees.
 
     !!! Note
@@ -635,7 +664,8 @@ def unzip(
     if any(not isinstance(x, tuple_cls) for x in tree_flat):
         raise ValueError("The input pytree is not flattenable to tuples")
     tree_flat_unzipped = zip(*tree_flat)
-    return tuple_cls(jt.unflatten(treedef, x) for x in tree_flat_unzipped)
+    cols = [jt.unflatten(treedef, x) for x in tree_flat_unzipped]
+    return _construct_tuple_like(tuple_cls, cols)
 
 
 def zip_(
@@ -783,7 +813,7 @@ def get_child_node_given_key(parent_node: Any, key: BuiltInKeyEntry):
     
 def leaves_with_annotated_path(
     tree: PyTree, 
-    annotation_func: Optional[Callable[[Any], T]] = type,
+    annotation_func: Callable[[Any], T] = type,
     is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> list[tuple[tuple[tuple[T, BuiltInKeyEntry], ...], Any]]:
     """Gets the leaves of a PyTree like `jax.tree.leaves_with_path`, also returning their node type paths. 
@@ -1014,3 +1044,22 @@ def leaves_of_type(leaf_type, tree):
     )
     
     # return [x for x in jt.leaves(tree, is_leaf=is_type(leaf_type)) if isinstance(x, leaf_type)]
+
+
+def _iter_aux_data(node_def, node_cls):
+    """Yields the aux_data of all `node_cls` nodes in a PyTreeDef, depth first."""
+    node_data = node_def.node_data()
+    if node_data is not None:
+        cls, aux = node_data
+        if cls is node_cls:
+            yield aux
+    for child in node_def.children():
+        yield from _iter_aux_data(child, node_cls)
+
+    
+def collect_aux_data(treedef: PyTreeDef, node_cls: type):
+    """
+    Returns a list of all the aux_data values that were attached
+    to instances of `node_cls` in this pytree def, without side-effects.
+    """
+    return list(_iter_aux_data(treedef, node_cls))

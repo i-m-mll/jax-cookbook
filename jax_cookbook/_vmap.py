@@ -9,6 +9,8 @@ import jax
 import jax.tree as jt
 from jaxtyping import PyTree
 
+from jax_cookbook._types import is_none
+
 
 def vmap_multi(
     func: Callable, 
@@ -158,53 +160,86 @@ class MultiVmapAxes:
 _AxisSpec = Union[int, None, MultiVmapAxes, PyTree[int]]
 
 
-def _merge_child_schedules(child_schedules: Sequence[list[Any]], tmpl_container):
-    """Pad child schedules so they all have equal length, then merge."""
-    n_levels = max(len(s) for s in child_schedules)
-    # Pad with None
-    pad = lambda s: s + [None] * (n_levels - len(s))
-    child_schedules = [pad(s) for s in child_schedules]
-    merged_levels: list[Any] = []
-    for lvl in range(n_levels):
-        if isinstance(tmpl_container, dict):
-            merged_levels.append({k: sched[lvl] for k, sched in zip(tmpl_container.keys(), child_schedules)})
-        else:  # list or tuple
-            merged_levels.append(type(tmpl_container)(sched[lvl] for sched in child_schedules))
-    return merged_levels
+# def _merge_child_schedules(child_schedules: Sequence[list[Any]], tmpl_container):
+#     """Pad child schedules so they all have equal length, then merge."""
+#     n_levels = max(len(s) for s in child_schedules)
+#     # Pad with None
+#     pad = lambda s: s + [None] * (n_levels - len(s))
+#     child_schedules = [pad(s) for s in child_schedules]
+#     merged_levels: list[Any] = []
+#     for lvl in range(n_levels):
+#         if isinstance(tmpl_container, dict):
+#             merged_levels.append({k: sched[lvl] for k, sched in zip(tmpl_container.keys(), child_schedules)})
+#         else:  # list or tuple
+#             values = [sched[lvl] for sched in child_schedules]
+#             merged_levels.append(type(tmpl_container)(*values))  # reconstruct the original type
+#     return merged_levels
 
 
-def _expand(spec: _AxisSpec) -> list[Any]:
-    """Recursively expand *any* in_axes spec into per‑level schedules."""
-    if isinstance(spec, MultiVmapAxes):
-        return spec.sequential_axes()
+# def _expand(spec: _AxisSpec) -> list[Any]:
+#     """Recursively expand *any* in_axes spec into per‑level schedules."""
+#     if isinstance(spec, MultiVmapAxes):
+#         return spec.sequential_axes()
 
-    # Containers: dict / list / tuple – recurse on each field
-    if isinstance(spec, dict):
-        child_scheds = {k: _expand(v) for k, v in spec.items()}
-        # dict preserves order (py ≥3.7)
-        merged = []
-        n_levels = max(len(s) for s in child_scheds.values())
-        for lvl in range(n_levels):
-            merged.append({k: child_scheds[k][lvl] if lvl < len(child_scheds[k]) else None for k in child_scheds})
-        return merged
+#     # Containers: dict / list / tuple – recurse on each field
+#     if isinstance(spec, dict):
+#         child_scheds = {k: _expand(v) for k, v in spec.items()}
+#         # dict preserves order (py ≥3.7)
+#         merged = []
+#         n_levels = max(len(s) for s in child_scheds.values())
+#         for lvl in range(n_levels):
+#             merged.append({k: child_scheds[k][lvl] if lvl < len(child_scheds[k]) else None for k in child_scheds})
+#         return merged
 
-    if isinstance(spec, (list, tuple)):
-        child_scheds = [_expand(c) for c in spec]
-        merged = _merge_child_schedules(child_scheds, spec)
-        return merged
+#     if isinstance(spec, (list, tuple)):
+#         child_scheds = [_expand(c) for c in spec]
+#         merged = _merge_child_schedules(child_scheds, spec)
+#         return merged
 
-    # Leaf: int / None / callable / object
-    return [spec]
+#     # Leaf: int / None / callable / object
+#     return [spec]
 
 
-def expand_axes_spec(in_axes: _AxisSpec) -> list[PyTree]:
-    """Given a single spec which may include `MultiVmapAxes`, expand it into 
-    a standard `in_axes_sequence` acceptable by `vmap_multi`.
+# def expand_axes_spec(in_axes: _AxisSpec) -> list[PyTree]:
+#     """Given a single spec which may include `MultiVmapAxes`, expand it into 
+#     a standard `in_axes_sequence` acceptable by `vmap_multi`.
 
-    For example: 
-        expand_axes_spec((MultiVmapAxes(0, 0), MultiVmapAxes(None,))) 
-        ⇒ [[0, 0], [None]]
+#     For example: 
+#         expand_axes_spec((MultiVmapAxes(0, 0), MultiVmapAxes(None,))) 
+#         ⇒ [[0, 0], [None]]
+#     """
+#     expanded = _expand(in_axes)
+#     # Guarantee list (could be tuple), copy for safety
+#     return list(expanded)
+
+def expand_axes_spec(spec: _AxisSpec) -> list[Any]:
     """
-    expanded = _expand(in_axes)
-    # Guarantee list (could be tuple), copy for safety
-    return list(expanded)
+    Expand a JAX-style in_axes spec (which may contain MultiVmapAxes)
+    into a list of per-level in_axes PyTrees.
+    """
+    # 1) Flatten the user spec, capturing the treedef
+    leaves, treedef = jt.flatten(spec, is_leaf=is_none)
+
+    # 2) Expand each leaf to its own schedule list
+    leaf_schedules: list[list[Optional[int]]] = []
+    for leaf in leaves:
+        if isinstance(leaf, MultiVmapAxes):
+            sched = leaf.sequential_axes()
+        else:
+            # single‐level: run at level 0 only
+            sched = [leaf]
+        leaf_schedules.append(sched)
+
+    # 3) Pad all schedules to the same number of levels
+    max_levels = max(len(s) for s in leaf_schedules)
+    for i, sched in enumerate(leaf_schedules):
+        if len(sched) < max_levels:
+            leaf_schedules[i] = sched + [None] * (max_levels - len(sched))
+
+    # 4) Reconstruct each level's in_axes PyTree
+    per_level_specs: list[Any] = []
+    for lvl in range(max_levels):
+        lvl_leaves = [ sched[lvl] for sched in leaf_schedules ]
+        per_level_specs.append(treedef.unflatten(lvl_leaves))
+
+    return per_level_specs

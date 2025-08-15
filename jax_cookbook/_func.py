@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from collections.abc import Callable
 from functools import reduce
 import hashlib
@@ -6,7 +7,10 @@ from operator import not_
 import pickle
 import re
 import types
-from typing import Any
+from typing import Any, Optional, Set, Tuple
+
+
+import jax.tree as jt
 
 
 def anyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
@@ -74,17 +78,6 @@ def identity(x):
     return x
 
 
-# hash_callable.py
-import inspect
-import hashlib
-import pickle
-import types
-import re
-from collections import OrderedDict
-from typing import Any, Dict, Set, Tuple
-import jax.tree as jt
-
-
 def _walk(v: Any) -> list[Any]:
     """
     Yield *v* itself **plus** all its PyTree leaves (if any),
@@ -135,6 +128,7 @@ def _collect_parts(
     obj: Any,
     parts: OrderedDict[str, bytes] | None = None,
     *,
+    ignore: Tuple[Callable, ...] = (),
     _memo_obj: Set[int] | None = None,
     _memo_code: Set[int] | None = None,
 ) -> OrderedDict[str, bytes]:
@@ -148,6 +142,16 @@ def _collect_parts(
         _memo_obj = set()
     if _memo_code is None:
         _memo_code = set()
+    assert parts is not None
+    
+    ignore_types = tuple(x for x in ignore if isinstance(x, type))
+    
+    if (obj in ignore or isinstance(obj, ignore_types)):
+        # Treat as opaque constant: just pickle / repr its identity once
+        if id(obj) not in _memo_obj:
+            parts[f"ignored:{id(obj)}"] = _bytes_for_constant(obj)
+            _memo_obj.add(id(obj))
+        return parts    
 
     # -- code objects ---------------------------------------------------- #
     if isinstance(obj, types.CodeType):
@@ -162,7 +166,7 @@ def _collect_parts(
             if isinstance(const, types.CodeType) or callable(const):
                 for leaf in _walk(const):
                     _collect_parts(
-                        leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
+                        leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
                     )
             else:
                 parts[f"const:{id(co)}:{idx}"] = _bytes_for_constant(const)
@@ -185,11 +189,17 @@ def _collect_parts(
         bound = obj.__call__
         func = getattr(bound, "__func__", bound)
         inst_state = getattr(obj, "__dict__", None)
+        
+        if not hasattr(func, "__code__"):
+            parts[f"opaque-callable:{id(obj)}"] = (
+                f"{type(obj).__module__}.{type(obj).__qualname__}".encode()
+            )
+            return parts
     else:                                          # pragma: no cover
         raise TypeError(f"{obj!r} is not a pure-Python callable")
 
     # 1) byte-code + nested constants ------------------------------------ #
-    _collect_parts(func.__code__, parts, _memo_obj=_memo_obj, _memo_code=_memo_code)
+    _collect_parts(func.__code__, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore)
 
     # 2) decorators ------------------------------------------------------- #
     deco_bytes = b""
@@ -219,7 +229,7 @@ def _collect_parts(
         for v in defaults_seq:
             for leaf in _walk(v):
                 _collect_parts(
-                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
+                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
                 )
                 if not callable(leaf):
                     blob.extend(_bytes_for_constant(leaf))
@@ -235,27 +245,27 @@ def _collect_parts(
             val = cell.cell_contents
             for leaf in _walk(val):
                 _collect_parts(
-                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
+                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
                 )
                 if not callable(leaf):
                     blob.extend(_bytes_for_constant(leaf))
         parts[f"closure:{id(func)}"] = bytes(blob)
 
-    # 5) referenced globals ---------------------------------------------- #
+    # 5) names referenced in byte-code (attributes, globals, etc.) --------
     if func.__code__.co_names:
         blob = bytearray()
         g = func.__globals__
-        for name in sorted(func.__code__.co_names):
-            if name in g:
-                blob.extend(name.encode())
+        for name in func.__code__.co_names:   # keep order as-compiled
+            blob.extend(name.encode())        # always hash the identifier
+            if name in g:                     # plus its global value if it exists
                 val = g[name]
                 for leaf in _walk(val):
-                    _collect_parts(
-                        leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
-                    )
-                    if not callable(leaf):
+                    _collect_parts(leaf, parts,
+                                   _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore)
+                    if (not callable(leaf)
+                        and not isinstance(leaf, types.CodeType)):
                         blob.extend(_bytes_for_constant(leaf))
-        parts[f"globals:{id(func)}"] = bytes(blob)
+        parts[f"names:{id(func)}"] = bytes(blob)
 
     # 6) instance state (callable-class) ---------------------------------- #
     if inst_state:
@@ -265,10 +275,9 @@ def _collect_parts(
             v = inst_state[k]
             for leaf in _walk(v):
                 _collect_parts(
-                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code
+                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
                 )
                 if not callable(leaf):
-                    print("oh dear", leaf)
                     blob.extend(_bytes_for_constant(leaf))
         parts[f"state:{id(obj)}"] = bytes(blob)
 
@@ -278,9 +287,9 @@ def _collect_parts(
 # --------------------------------------------------------------------------- #
 # -- public helpers ---------------------------------------------------------- #
 # --------------------------------------------------------------------------- #
-def hash_callable(obj: Any) -> str:
+def hash_callable(obj: Any, ignore: tuple[Callable, ...] = ()) -> str:
     """Return a single SHA-256 hex digest for *obj*’s behaviour."""
-    parts = _collect_parts(obj)
+    parts = _collect_parts(obj, ignore=ignore)
     return hashlib.sha256(b"".join(parts.values())).hexdigest()
 
 

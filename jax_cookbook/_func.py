@@ -41,7 +41,7 @@ def notf(func: Callable[..., bool]) -> Callable[..., bool]:
 
 
 def compose(*funcs):
-    """Compose a sequence of functions from left to right.
+    """Compose functions from left to right.
     
     Args:
         *funcs: Functions to compose, applied left to right (first to last)
@@ -59,12 +59,20 @@ def compose(*funcs):
     return reduce(composite, funcs)
 
     # return reduce(lambda f, g: lambda x: g(f(x)), funcs)
+    
+
+def bundle(*funcs):
+    """Bundle functions into a single function that returns a tuple of their results.
+    """
+    def _funcs(*args, **kwargs):
+        return tuple(f(*args, **kwargs) for f in funcs)
+    return _funcs
 
 
-def is_type(*types) -> Callable[..., bool]:
+def is_type(*types_) -> Callable[..., bool]:
     """Returns a function that returns `True` if the input is an instance of any of the given types."""
     return lambda x: any(
-        isinstance(x, t) for t in types
+        isinstance(x, t) for t in types_
     )
 
 

@@ -5,7 +5,6 @@ from functools import wraps
 from typing import Any, Iterable, Optional, Union
 
 import equinox as eqx
-import jax 
 import jax.tree as jt
 from jaxtyping import PyTree
 
@@ -13,25 +12,27 @@ from jax_cookbook._types import is_none
 
 
 def vmap_multi(
-    func: Callable, 
+    func: Callable,
     in_axes_sequence: Iterable[PyTree[Union[int, Optional[Callable[[Any], int]]]]],
-    out_axes_sequence: Optional[Iterable[PyTree[Union[int, Optional[Callable[[Any], int]]]]]] = None,
+    out_axes_sequence: Optional[
+        Iterable[PyTree[Union[int, Optional[Callable[[Any], int]]]]]
+    ] = None,
     vmap_func: Callable = eqx.filter_vmap,
 ):
     """Given a sequence of `in_axes`, construct a nested vmap of `func`.
-    
+
     Arguments:
         func: Function to be transformed.
         in_axes_sequence: Sequence of `in_axes` specifications, as they would be passed to `jax.vmap`.
-            For example, to successively map over axes 0, 1, and 2 of a single array argument, 
+            For example, to successively map over axes 0, 1, and 2 of a single array argument,
             pass `in_axes_sequence=(0, 0, 0)`.
         vmap_func: Transformation function to use.
     """
     func_v = func
-    
+
     # if out_axes_sequence is None:
     #     out_axes_sequence = jt.map(lambda axis: eqx.if_array(axis=axis), in_axes_sequence)
-    
+
     # for in_axes, out_axes in zip(in_axes_sequence, out_axes_sequence):
     #     func_v = vmap_func(func_v, in_axes=in_axes, out_axes=out_axes)
 
@@ -44,19 +45,19 @@ def vmap_multi(
 def unkwarg_key(func):
     """Converts a final `key` kwarg into an initial positional arg.
 
-    This is useful because many Equinox modules take `key` as a kwarg, and transformations 
+    This is useful because many Equinox modules take `key` as a kwarg, and transformations
     such as `equinox.filter_vmap` don't like kwargs -- but sometimes we want to transform over `key`
     anyway.
     """
+
     @wraps(func)
     def wrapper(key, *args):
         return func(*args, key=key)
+
     return wrapper
 
 
-def natural_to_sequential_axes(
-    axes: Sequence[Optional[int]]
-) -> list[Optional[int]]:
+def natural_to_sequential_axes(axes: Sequence[Optional[int]]) -> list[Optional[int]]:
     """
     Given a flat sequence of natural‐index axes (ints or None),
     produce the corresponding sequential axes by subtracting,
@@ -79,22 +80,15 @@ def natural_to_sequential_axes(
     """
     non_none_axes = [a for a in axes if a is not None]
     if len(non_none_axes) != len(set(non_none_axes)):
-        raise ValueError(
-            "Natural indices must be unique; got: "
-            f"{axes!r}."
-        )
-    
+        raise ValueError(f"Natural indices must be unique; got: {axes!r}.")
+
     seq: list[Optional[int]] = []
     for j, a_j in enumerate(axes):
         if a_j is None:
             seq.append(None)
         else:
             # count earlier axes that have been peeled away
-            peeled = sum(
-                1
-                for b in axes[:j]
-                if b is not None and b < a_j
-            )
+            peeled = sum(1 for b in axes[:j] if b is not None and b < a_j)
             seq.append(a_j - peeled)
     return seq
 
@@ -157,62 +151,10 @@ class MultiVmapAxes:
         return iter(self.axes)
 
 
-_AxisSpec = Union[int, None, MultiVmapAxes, PyTree[int]]
+AxisSpec = Union[int, None, MultiVmapAxes, PyTree[int]]
 
 
-# def _merge_child_schedules(child_schedules: Sequence[list[Any]], tmpl_container):
-#     """Pad child schedules so they all have equal length, then merge."""
-#     n_levels = max(len(s) for s in child_schedules)
-#     # Pad with None
-#     pad = lambda s: s + [None] * (n_levels - len(s))
-#     child_schedules = [pad(s) for s in child_schedules]
-#     merged_levels: list[Any] = []
-#     for lvl in range(n_levels):
-#         if isinstance(tmpl_container, dict):
-#             merged_levels.append({k: sched[lvl] for k, sched in zip(tmpl_container.keys(), child_schedules)})
-#         else:  # list or tuple
-#             values = [sched[lvl] for sched in child_schedules]
-#             merged_levels.append(type(tmpl_container)(*values))  # reconstruct the original type
-#     return merged_levels
-
-
-# def _expand(spec: _AxisSpec) -> list[Any]:
-#     """Recursively expand *any* in_axes spec into per‑level schedules."""
-#     if isinstance(spec, MultiVmapAxes):
-#         return spec.sequential_axes()
-
-#     # Containers: dict / list / tuple – recurse on each field
-#     if isinstance(spec, dict):
-#         child_scheds = {k: _expand(v) for k, v in spec.items()}
-#         # dict preserves order (py ≥3.7)
-#         merged = []
-#         n_levels = max(len(s) for s in child_scheds.values())
-#         for lvl in range(n_levels):
-#             merged.append({k: child_scheds[k][lvl] if lvl < len(child_scheds[k]) else None for k in child_scheds})
-#         return merged
-
-#     if isinstance(spec, (list, tuple)):
-#         child_scheds = [_expand(c) for c in spec]
-#         merged = _merge_child_schedules(child_scheds, spec)
-#         return merged
-
-#     # Leaf: int / None / callable / object
-#     return [spec]
-
-
-# def expand_axes_spec(in_axes: _AxisSpec) -> list[PyTree]:
-#     """Given a single spec which may include `MultiVmapAxes`, expand it into 
-#     a standard `in_axes_sequence` acceptable by `vmap_multi`.
-
-#     For example: 
-#         expand_axes_spec((MultiVmapAxes(0, 0), MultiVmapAxes(None,))) 
-#         ⇒ [[0, 0], [None]]
-#     """
-#     expanded = _expand(in_axes)
-#     # Guarantee list (could be tuple), copy for safety
-#     return list(expanded)
-
-def expand_axes_spec(spec: _AxisSpec) -> list[Any]:
+def expand_axes_spec(spec: AxisSpec) -> list[Any]:
     """
     Expand a JAX-style in_axes spec (which may contain MultiVmapAxes)
     into a list of per-level in_axes PyTrees.
@@ -239,7 +181,7 @@ def expand_axes_spec(spec: _AxisSpec) -> list[Any]:
     # 4) Reconstruct each level's in_axes PyTree
     per_level_specs: list[Any] = []
     for lvl in range(max_levels):
-        lvl_leaves = [ sched[lvl] for sched in leaf_schedules ]
+        lvl_leaves = [sched[lvl] for sched in leaf_schedules]
         per_level_specs.append(treedef.unflatten(lvl_leaves))
 
     return per_level_specs

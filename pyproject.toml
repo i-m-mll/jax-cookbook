@@ -29,6 +29,7 @@ dependencies = [
     "jax>=0.4.30",
     "jaxtyping>=0.2.36",
     "numpy>=2.0.2",
+    "rich>=14.1.0",
     "tqdm>=4.67.1",
 ]
 

@@ -1,4 +1,4 @@
-from typing import Any 
+from typing import Any
 
 from equinox import Module
 
@@ -8,4 +8,6 @@ def is_module(element: Any) -> bool:
     return isinstance(element, Module)
 
 
-is_none = lambda x: x is None
+def is_none(x: Any) -> bool:
+    """Return `True` if `x` is `None`."""
+    return x is None

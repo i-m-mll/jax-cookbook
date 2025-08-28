@@ -4,43 +4,65 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
-from typing import Any
-
-from equinox import Module
-
-from ._io import save, load, load_with_hyperparameters, arrays_to_lists
-
-from ._vmap import (
-    unkwarg_key,
-    vmap_multi, 
-    natural_to_sequential_axes,
-    MultiVmapAxes,
-    expand_axes_spec,
-)
-
-from ._func import (
-    allf,
-    anyf,
-    compose,
-    notf,
-    identity,
-    is_not_type,
-    is_type,
-    hash_callable,
-)
-
-from ._where import (
-    where_attr_strs_to_func,
-    where_func_to_strs,
-)
-
-from ._types import (
-    is_module,
-    is_none,
-)
-
 from ._array import (
     ArrayLikeWrapper,
     unwrap_arraylikes,
     unwrap_arraylikes_and_labels,
 )
+from ._func import (
+    allf,
+    anyf,
+    compose,
+    hash_callable,
+    identity,
+    is_not_type,
+    is_type,
+    notf,
+)
+from ._io import arrays_to_lists, load, load_with_hyperparameters, save
+from .progress import (
+    map_rich,
+)
+from ._types import (
+    is_module,
+    is_none,
+)
+from ._vmap import (
+    MultiVmapAxes,
+    expand_axes_spec,
+    natural_to_sequential_axes,
+    unkwarg_key,
+    vmap_multi,
+)
+from ._where import (
+    where_attr_strs_to_func,
+    where_func_to_strs,
+)
+
+__all__ = [
+    "ArrayLikeWrapper",
+    "MultiVmapAxes",
+    "allf",
+    "anyf",
+    "arrays_to_lists",
+    "compose",
+    "expand_axes_spec",
+    "hash_callable",
+    "identity",
+    "is_module",
+    "is_none",
+    "is_not_type",
+    "is_type",
+    "load",
+    "load_with_hyperparameters",
+    "map_rich",
+    "natural_to_sequential_axes",
+    "notf",
+    "save",
+    "unwrap_arraylikes",
+    "unwrap_arraylikes_and_labels",
+    "unkwarg_key",
+    "vmap_multi",
+    "where_attr_strs_to_func",
+    "where_func_to_strs",
+]

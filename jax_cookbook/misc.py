@@ -1,20 +1,20 @@
+import copy
+import logging
 from collections.abc import (
-    Callable,
+    Hashable,
     Iterable,
     Mapping,
+    MutableMapping,
     MutableSequence,
     Sequence,
     Set,
 )
-import copy
 from functools import wraps
-from itertools import zip_longest, chain
-import logging
-from typing import Any, Optional, Tuple, TypeVar, Union
+from itertools import chain, zip_longest
+from typing import Any, Iterable, Optional, Tuple, TypeVar, Union, cast
 
 import jax
 import jax.numpy as jnp
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +28,10 @@ SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 
 T1 = TypeVar("T1")
 T2 = TypeVar("T2")
+TupleT = TypeVar("TupleT", bound=tuple)
 
 
 class StrAlwaysLT(str):
-
     def __lt__(self, other):
         return True
 
@@ -77,9 +77,7 @@ def get_unique_label(label: str, invalid_labels: Union[Sequence[str], Set[str]])
 
 
 def unique_generator(
-    seq: Sequence[T1],
-    replace_duplicates: bool = False,
-    replace_value: Any = None
+    seq: Sequence[T1], replace_duplicates: bool = False, replace_value: Any = None
 ) -> Iterable[Optional[T1]]:
     """Yields the first occurrence of sequence entries, in order.
 
@@ -132,7 +130,7 @@ def crop_to_shortest(*, axis: int):
 
             min_len = min(sizes)
 
-            def _crop(a): 
+            def _crop(a):
                 if hasattr(a, "shape") and a.shape[axis] != min_len:
                     return jax.lax.slice_in_dim(a, 0, min_len, axis=axis)
                 return a
@@ -143,3 +141,56 @@ def crop_to_shortest(*, axis: int):
         return wrapper
 
     return decorator
+
+
+def construct_tuple_like(cls: type[TupleT], elems: Iterable[Any]) -> TupleT:
+    # Fast path for the builtin tuple
+    if cls is tuple:
+        return cast(TupleT, tuple(elems))
+
+    # NamedTuple/collections.namedtuple provide _make(iterable)
+    make = getattr(cls, "_make", None)
+    if callable(make):
+        return cast(TupleT, make(elems))
+
+    # Generic fallback:
+    # 1) try positional args (NamedTuple-like)
+    try:
+        return cast(TupleT, cls(*elems))
+    except TypeError as e1:
+        # 2) try single iterable (plain tuple subclasses that inherit tuple.__new__)
+        try:
+            return cast(TupleT, cls(elems))
+        except TypeError:
+            raise TypeError(
+                f"Cannot construct {cls.__name__} from elements; "
+                "tried cls(*elems) and cls(elems)."
+            ) from e1
+
+
+K = TypeVar("K", bound=Hashable)
+
+
+def _clone_like_base(base: Mapping[K, Any]) -> MutableMapping[K, Any]:
+    # Prefer preserving the concrete type *if* .copy() exists and returns something mutable.
+    copy_m = getattr(base, "copy", None)
+    if callable(copy_m):
+        out = copy_m()
+        if isinstance(out, MutableMapping):
+            return out
+    # Fallback: plain dict (always mutable)
+    return dict(base)
+
+
+#! TODO: Make this work for dict nodes in arbitrary PyTrees, not just pure-dict trees
+def deep_merge(base: Mapping[K, Any], over: Mapping[K, Any]) -> MutableMapping[K, Any]:
+    """Overlay `over` onto `base`, preserving base node types where possible.
+    Purely structural: JAX PyTree–friendly (runs on host during trace)."""
+    out = _clone_like_base(base)
+    for k, v in over.items():
+        bv = out.get(k)
+        if isinstance(bv, Mapping) and isinstance(v, Mapping):
+            out[k] = deep_merge(bv, v)
+        else:
+            out[k] = v
+    return out

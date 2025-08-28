@@ -1,26 +1,35 @@
 import atexit
 import logging
+import math
 import os
 import sys
+import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from functools import partial
-from typing import Any, Optional, TypeVar
+from typing import Any, Dict, Optional, Tuple, TypeVar
 
 import jax.tree as jt
 from jaxtyping import PyTree
 from rich import get_console
+from rich.console import Console, Group, RenderableType
+from rich.padding import Padding
 from rich.progress import (
     BarColumn,
     # IterationSpeedColumn,
     MofNCompleteColumn,
     Progress,
+    ProgressColumn,
     SpinnerColumn,
+    Task,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from rich.text import Text
 from tqdm.auto import tqdm as _tqdm
 
 from jax_cookbook.tree import HR
@@ -45,19 +54,162 @@ _tqdm_write = partial(_tqdm.write, file=sys.stdout, end="")
 #         return super().make_tasks_table(tasks_list)
 
 
+class _PerTaskExpDecayRate:
+    """Tracks EWMA speed per task.id."""
+
+    def __init__(self):
+        # task.id -> (last_t, last_completed, ewma_rate)
+        self._state: Dict[int, Tuple[float, float, float]] = {}
+
+    def update_and_get_rate(self, task: Task) -> float | None:
+        now = time.perf_counter()
+        completed = float(task.completed)
+
+        state = self._state.get(task.id)
+        if state is None:
+            # First sighting: seed state, no estimate yet.
+            self._state[task.id] = (now, completed, 0.0)
+            return None
+
+        last_t, last_c, ewma = state
+        dc = completed - last_c
+        if dc <= 0:
+            # No new work completed: HOLD the estimate; don't decay, don't advance time.
+            return ewma if ewma > 0 else None
+
+        dt = now - last_t
+        if dt <= 1e-9:
+            # Too soon to say anything meaningful.
+            return ewma if ewma > 0 else None
+
+        # Halflife → time constant.
+        hl = float(task.fields.get("eta_halflife", 10.0))
+        if hl <= 0:
+            hl = 1e-3
+        tau = hl / math.log(2.0)
+
+        # Event-driven smoothing factor based on the inter-increment time.
+        alpha = 1.0 - math.exp(-dt / tau)
+
+        inst = max(0.0, dc / dt)
+        ewma = (1.0 - alpha) * ewma + alpha * inst
+
+        # Update the state ONLY when we actually advanced.
+        self._state[task.id] = (now, completed, ewma)
+        return ewma if ewma > 0 else None
+
+
+class _PerTaskWindowRate:
+    def __init__(self, window_s: float = 20.0):
+        self.window_s = float(window_s)
+        self.buf = {}  # task.id -> deque[(t, completed)]
+
+    def update_and_get_rate(self, task: Task) -> float | None:
+        now = time.perf_counter()
+        c = float(task.completed)
+        dq = self.buf.setdefault(task.id, deque())
+
+        # Append only when completed changes (event samples).
+        if dq and dq[-1][1] == c:
+            return None if len(dq) < 2 else (dq[-1][1] - dq[0][1]) / max(1e-9, dq[-1][0] - dq[0][0])
+
+        dq.append((now, c))
+
+        # Trim old samples.
+        cutoff = now - self.window_s
+        while dq and dq[0][0] < cutoff:
+            dq.popleft()
+
+        if len(dq) < 2:
+            return None
+        dt = dq[-1][0] - dq[0][0]
+        dc = dq[-1][1] - dq[0][1]
+        return dc / dt if dt > 1e-9 and dc > 0 else None
+
+
+class PerTaskSpeedColumn(ProgressColumn):
+    """Shows it/s using per-task EWMA; configurable via task.fields['eta_halflife']."""
+
+    def __init__(
+        self, rates: _PerTaskExpDecayRate, style: str = "progress.spinner", parens: bool = False
+    ):
+        super().__init__()
+        self._rates = rates
+        self.style = style
+        self._parens = parens
+
+    def render(self, task: Task) -> RenderableType:
+        rate = self._rates.update_and_get_rate(task)
+        speed_str = f"{rate:,.2f} it/s" if rate else "--- it/s"
+        if self._parens:
+            speed_str = f"({speed_str})"
+        return Text(speed_str, style=self.style)
+
+
+ETA_PLACEHOLDER = "--:--:--"
+
+
+class PerTaskETAColumn(ProgressColumn):
+    """Shows ETA using per-task EWMA speed; configurable via task.fields['eta_halflife']."""
+
+    def __init__(
+        self, rates: _PerTaskExpDecayRate, style: str = "progress.remaining", label: str = ""
+    ):
+        super().__init__()
+        self._rates = rates
+        self.style = style
+        self._label = label
+
+    # @staticmethod
+    # def _fmt_seconds(sec: float) -> str:
+    #     if not math.isfinite(sec) or sec < 0:
+    #         return "—"
+    #     m, s = divmod(int(sec + 0.5), 60)
+    #     h, m = divmod(m, 60)
+    #     if h:
+    #         return f"{h:d}:{m:02d}:{s:02d}"
+    #     return f"{m:d}:{s:02d}"
+
+    def render(self, task: Task) -> RenderableType:
+        if task.total is None or task.completed >= task.total:
+            eta_str = ETA_PLACEHOLDER
+        assert task.total is not None
+        rate = self._rates.update_and_get_rate(task)
+        if not rate:
+            eta_str = ETA_PLACEHOLDER
+        else:
+            remaining = max(0.0, float(task.total) - float(task.completed))
+            eta = remaining / rate
+            if rate > 0:
+                eta_str = time.strftime("%H:%M:%S", time.gmtime(eta))
+            else:
+                eta_str = ETA_PLACEHOLDER
+        if self._label:
+            eta_str = f"{self._label} {eta_str}"
+        return Text(eta_str, style=self.style)
+
+
+_rates = _PerTaskExpDecayRate()
+
+
 _COLUMNS = [
     SpinnerColumn(),
-    TextColumn("[progress.description]{task.description}"),
+    TextColumn(
+        "{task.description}",
+        style="markdown.strong",
+    ),
     BarColumn(),
     MofNCompleteColumn(),
     TimeElapsedColumn(),
-    TimeRemainingColumn(),
+    # TimeRemainingColumn(),
+    PerTaskETAColumn(_rates),
+    PerTaskSpeedColumn(_rates),
+    # IterationSpeedColumn(),
     TextColumn(
         "{task.fields[subdescription]}",
-        style="dim",
+        style="progress.description",
         justify="right",
     ),
-    # IterationSpeedColumn(),
 ]
 _PROG: Optional[Progress] = None
 _RC = 0  # refcount of active users
@@ -73,6 +225,7 @@ def _start_progress(*, redirect_print: bool = True, **kwargs) -> Progress:
             redirect_stderr=redirect_print,
             **kwargs,
         )
+        _PROG.console.print()  #! ensure a blank line before the bars (doesn't seem to work)
         _PROG.start()
     return _PROG
 
@@ -133,22 +286,15 @@ def progress_task(
     total: Optional[int] = None,
     *,
     completed: int = 0,
-    transient: bool = True,
-    redirect_print: bool = True,
-    refresh_per_second: float = 10,
-    speed_estimate_period: float = 1.0,  # smoothing window for speed estimate
+    eta_halflife: float = 10.0,  # smoothing window for speed estimate (per-task override
+    **kwargs,
 ) -> Iterator[Callable[[int], None]]:
     """
     Create a shared task, yield an `advance(n=1)` function; task is removed automatically.
     """
-    prog = retain_progress(
-        transient=transient,
-        redirect_print=redirect_print,
-        refresh_per_second=refresh_per_second,
-        speed_estimate_period=speed_estimate_period,
-    )
+    prog = retain_progress(**kwargs)
     task_id = prog.add_task(
-        description, total=total, completed=completed, subdescription=""
+        description, total=total, completed=completed, subdescription="", eta_halflife=eta_halflife
     )
     try:
         yield lambda n=1: prog.advance(task_id, n)
@@ -187,6 +333,7 @@ def progress_piter(
     total: Optional[int] = None,
     completed: int = 0,
     auto_advance: bool = True,  # auto-advance after each yielded item
+    eta_halflife: float = 10.0,  # smoothing window for speed estimate
 ):
     """
     Context manager yielding (iterator, update).
@@ -201,7 +348,7 @@ def progress_piter(
 
     prog = retain_progress()
     task_id = prog.add_task(
-        description, total=total, completed=completed, subdescription=""
+        description, total=total, completed=completed, subdescription="", eta_halflife=eta_halflife
     )
     try:
 
@@ -234,10 +381,8 @@ def piter(
     total: Optional[int] = None,
     completed: int = 0,
     right: Optional[Callable[[T, int], str]] = None,  # label function(item, index)
-    transient: bool = True,
-    redirect_print: bool = True,
-    refresh_per_second: float = 10,
-    speed_estimate_period: float = 1.0,  # smoothing window for speed estimate
+    eta_halflife: float = 10.0,  # smoothing window for speed estimate
+    **kwargs,
 ) -> Iterator[T]:
     """
     Iterator wrapper sharing the global Progress.
@@ -248,14 +393,9 @@ def piter(
         except Exception:
             total = None
 
-    prog = retain_progress(
-        transient=transient,
-        redirect_print=redirect_print,
-        refresh_per_second=refresh_per_second,
-        speed_estimate_period=speed_estimate_period,
-    )
+    prog = retain_progress(**kwargs)
     task_id = prog.add_task(
-        description, total=total, completed=completed, subdescription=""
+        description, total=total, completed=completed, subdescription="", eta_halflife=eta_halflife
     )
     try:
         for i, item in enumerate(iterable):
@@ -281,6 +421,7 @@ def map_rich(
     is_leaf: Optional[Callable[..., bool]] = None,
     logger: Optional[logging.Logger] = None,
     log_level: int = logging.INFO,
+    eta_halflife: float = 10.0,  # smoothing window for speed estimate
     **kwargs,  # for `retain_progress`
 ) -> PyTree[S, "T"]:
     """Adds a Rich progress task to a shared global Progress (stacks with others)."""
@@ -291,7 +432,9 @@ def map_rich(
 
     # NEW: acquire the shared Progress instead of creating a local one
     prog = retain_progress(**kwargs)
-    task_id = prog.add_task(description, total=n_leaves, subdescription="")
+    task_id = prog.add_task(
+        description, total=n_leaves, subdescription="", eta_halflife=eta_halflife
+    )
     try:
         # Prepare labels tree (match your tqdm version)
         if labels is None:
@@ -367,3 +510,15 @@ def map_tqdm(
         pbar.set_description("Processing tree leaves")
         labels = jt.map(lambda _: None, tree, is_leaf=is_leaf)
     return jt.map(_f, tree, labels, *rest, is_leaf=is_leaf)
+
+
+def display_rich_text_themes():
+    """Displays all available text styles for the default `rich` console."""
+    console = Console()
+
+    # Get all style names in the current theme
+    all_styles = sorted(console._theme_stack._entries[0].keys())  # private, but works
+
+    # Print them out
+    for name in all_styles:
+        console.print(f"{name:25}", style=name)

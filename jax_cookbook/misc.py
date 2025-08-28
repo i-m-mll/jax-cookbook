@@ -163,8 +163,7 @@ def construct_tuple_like(cls: type[TupleT], elems: Iterable[Any]) -> TupleT:
             return cast(TupleT, cls(elems))
         except TypeError:
             raise TypeError(
-                f"Cannot construct {cls.__name__} from elements; "
-                "tried cls(*elems) and cls(elems)."
+                f"Cannot construct {cls.__name__} from elements; tried cls(*elems) and cls(elems)."
             ) from e1
 
 

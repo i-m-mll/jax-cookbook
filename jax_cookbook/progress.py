@@ -4,6 +4,7 @@ import os
 import sys
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import partial
 from typing import Any, Optional, TypeVar
 
@@ -32,6 +33,18 @@ tqdm_mode = os.environ.get("FEEDBAX_TQDM", "auto")
 _tqdm_write = partial(_tqdm.write, file=sys.stdout, end="")
 
 
+# class ProgressBottom(Progress):
+#     """Render tasks bottom-up: the first-added task appears at the bottom."""
+
+#     # Rich builds the table from a list of Task objects; we just reverse that list.
+#     def make_tasks_table(self, tasks: Iterable[Task]):  # type: ignore[override]
+#         # Convert to list and reverse the order before delegating to parent
+#         tasks_list = list(tasks)[::-1]
+#         for t in tasks_list:
+#             t.fields.setdefault("subdescription", "")
+#         return super().make_tasks_table(tasks_list)
+
+
 _COLUMNS = [
     SpinnerColumn(),
     TextColumn("[progress.description]{task.description}"),
@@ -39,6 +52,11 @@ _COLUMNS = [
     MofNCompleteColumn(),
     TimeElapsedColumn(),
     TimeRemainingColumn(),
+    TextColumn(
+        "{task.fields[subdescription]}",
+        style="dim",
+        justify="right",
+    ),
     # IterationSpeedColumn(),
 ]
 _PROG: Optional[Progress] = None
@@ -100,6 +118,16 @@ def release_progress() -> None:
 
 
 @contextmanager
+def progress_session():
+    """Keep the global Progress alive for the duration of this context."""
+    retain_progress()  # increments the refcount; starts the hub if needed
+    try:
+        yield  # tasks can be created/removed freely inside
+    finally:
+        release_progress()  # decrements; stops hub at the very end (one newline)
+
+
+@contextmanager
 def progress_task(
     description: str,
     total: Optional[int] = None,
@@ -119,9 +147,81 @@ def progress_task(
         refresh_per_second=refresh_per_second,
         speed_estimate_period=speed_estimate_period,
     )
-    task_id = prog.add_task(description, total=total, completed=completed)
+    task_id = prog.add_task(
+        description, total=total, completed=completed, subdescription=""
+    )
     try:
         yield lambda n=1: prog.advance(task_id, n)
+    finally:
+        prog.remove_task(task_id)
+        release_progress()
+
+
+@dataclass
+class PiterUpdate:
+    _update: Callable[..., None]
+    _advance: Callable[[int], None]
+
+    # Convenience methods you can call from *inside* your loop body:
+    def subdescription(self, text: object) -> None:
+        self._update(subdescription=str(text))
+
+    def description(self, text: object) -> None:
+        self._update(description=str(text))
+
+    def advance(self, n: int = 1) -> None:
+        self._advance(n)
+
+    def completed(self, n: int) -> None:
+        self._update(completed=int(n))
+
+    def total(self, n: int) -> None:
+        self._update(total=int(n))
+
+
+@contextmanager
+def progress_piter(
+    iterable: Iterable[T],
+    *,
+    description: str = "Working…",
+    total: Optional[int] = None,
+    completed: int = 0,
+    auto_advance: bool = True,  # auto-advance after each yielded item
+):
+    """
+    Context manager yielding (iterator, update).
+
+    Use `update.subdesc(...)` or `update.desc(...)` *inside* your loop body.
+    """
+    if total is None:
+        try:
+            total = len(iterable)  # may fail for generators
+        except Exception:
+            total = None
+
+    prog = retain_progress()
+    task_id = prog.add_task(
+        description, total=total, completed=completed, subdescription=""
+    )
+    try:
+
+        def _update(**kwargs):
+            prog.update(task_id, **kwargs)
+
+        def _advance(n=1):
+            prog.advance(task_id, n)
+
+        updater = PiterUpdate(_update=_update, _advance=_advance)
+
+        def _iter() -> Iterator[T]:
+            i = completed
+            for item in iterable:
+                yield item
+                if auto_advance:
+                    i += 1
+                    _advance(1)
+
+        yield _iter(), updater
     finally:
         prog.remove_task(task_id)
         release_progress()
@@ -133,6 +233,7 @@ def piter(
     description: str = "Working…",
     total: Optional[int] = None,
     completed: int = 0,
+    right: Optional[Callable[[T, int], str]] = None,  # label function(item, index)
     transient: bool = True,
     redirect_print: bool = True,
     refresh_per_second: float = 10,
@@ -153,9 +254,16 @@ def piter(
         refresh_per_second=refresh_per_second,
         speed_estimate_period=speed_estimate_period,
     )
-    task_id = prog.add_task(description, total=total, completed=completed)
+    task_id = prog.add_task(
+        description, total=total, completed=completed, subdescription=""
+    )
     try:
-        for item in iterable:
+        for i, item in enumerate(iterable):
+            if right is not None:
+                try:
+                    prog.update(task_id, subdescription=right(item, i))
+                except Exception:
+                    pass  # don't break progress on label errors
             yield item
             prog.advance(task_id, 1)
     finally:
@@ -183,11 +291,10 @@ def map_rich(
 
     # NEW: acquire the shared Progress instead of creating a local one
     prog = retain_progress(**kwargs)
-    task_id = prog.add_task(description, total=n_leaves)
+    task_id = prog.add_task(description, total=n_leaves, subdescription="")
     try:
         # Prepare labels tree (match your tqdm version)
         if labels is None:
-            prog.update(task_id, description=description)
             labels = jt.map(lambda _: None, tree, is_leaf=is_leaf)
 
         def _log(msg: str):
@@ -199,14 +306,11 @@ def map_rich(
 
         def _f(leaf, leaf_label, *rest_args):
             if leaf_label is not None:
-                prog.update(task_id, description=f"Processing leaf: {leaf_label}")
+                prog.update(task_id, subdescription=leaf_label)
             if verbose:
                 _log(f"Processing leaf: {leaf_label}")
 
             result = f(leaf, *rest_args)
-
-            if verbose:
-                _log("")
 
             prog.advance(task_id, 1)
             return result

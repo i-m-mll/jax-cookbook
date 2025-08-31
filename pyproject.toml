@@ -58,10 +58,10 @@ packages = ["jax_cookbook"]
 
 [tool.pyright]
 include = ["jax_cookbook"]
-exclude = ["**/__pycache__"]
+exclude = ["**/__pycache__", ".venv", "docs"]
+typeCheckingMode = "standard"
 verboseOutput = true
 reportMissingImports = true
-reportMissingTypeStubs = true
 reportAttributeAccessIssue = false
 
 [tool.black]

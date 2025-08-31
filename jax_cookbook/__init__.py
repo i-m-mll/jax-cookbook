@@ -20,9 +20,7 @@ from ._func import (
     notf,
 )
 from ._io import arrays_to_lists, load, load_with_hyperparameters, save
-from .progress import (
-    map_rich,
-)
+from ._ldict import LDict, LDictConstructor
 from ._types import (
     is_module,
     is_none,
@@ -38,10 +36,15 @@ from ._where import (
     where_attr_strs_to_func,
     where_func_to_strs,
 )
+from .progress import (
+    map_rich,
+)
 
 __all__ = [
     "ArrayLikeWrapper",
     "MultiVmapAxes",
+    "LDict",
+    "LDictConstructor",
     "allf",
     "anyf",
     "arrays_to_lists",

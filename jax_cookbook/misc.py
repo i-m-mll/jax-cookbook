@@ -144,27 +144,27 @@ def crop_to_shortest(*, axis: int):
 
 
 def construct_tuple_like(cls: type[TupleT], elems: Iterable[Any]) -> TupleT:
-    # Fast path for the builtin tuple
-    if cls is tuple:
-        return cast(TupleT, tuple(elems))
+    # Convert to list to avoid consuming iterators multiple times
+    elems_list = list(elems)
 
     # NamedTuple/collections.namedtuple provide _make(iterable)
     make = getattr(cls, "_make", None)
     if callable(make):
-        return cast(TupleT, make(elems))
+        return cast(TupleT, make(elems_list))
 
-    # Generic fallback:
-    # 1) try positional args (NamedTuple-like)
+    # Try tuple-style construction first (works for tuple and its subclasses)
     try:
-        return cast(TupleT, cls(*elems))
-    except TypeError as e1:
-        # 2) try single iterable (plain tuple subclasses that inherit tuple.__new__)
-        try:
-            return cast(TupleT, cls(elems))
-        except TypeError:
-            raise TypeError(
-                f"Cannot construct {cls.__name__} from elements; tried cls(*elems) and cls(elems)."
-            ) from e1
+        return cast(TupleT, cls(elems_list))
+    except TypeError:
+        pass
+
+    # Try unpacked args (for custom tuple-like classes)
+    try:
+        return cast(TupleT, cls(*elems_list))
+    except TypeError as e:
+        raise TypeError(
+            f"Cannot construct {cls.__name__} from elements; tried cls(elems) and cls(*elems)."
+        ) from e
 
 
 K = TypeVar("K", bound=Hashable)
@@ -193,3 +193,15 @@ def deep_merge(base: Mapping[K, Any], over: Mapping[K, Any]) -> MutableMapping[K
         else:
             out[k] = v
     return out
+
+
+def split_by(x, sizes, axis=0):
+    """Partition an array into given sizes along the specified axis."""
+    if x.shape[axis] != sum(sizes):
+        raise ValueError(f"Cannot split axis of size {x.shape[axis]} into sizes {sizes}")
+    split_indices = jnp.cumsum(jnp.array(sizes))[:-1]
+    return jnp.split(x, split_indices, axis=axis)
+
+
+def _fname(f: object) -> str:
+    return getattr(f, "__name__", f.__class__.__name__)

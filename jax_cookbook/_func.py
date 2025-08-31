@@ -1,20 +1,40 @@
-from collections import OrderedDict
-from collections.abc import Callable
-from functools import reduce
+import functools
 import hashlib
 import inspect
-from operator import not_
+import logging
 import pickle
 import re
 import types
-from typing import Any, Optional, Set, Tuple
-
+from collections import OrderedDict
+from collections.abc import Callable, Mapping
+from functools import reduce, wraps
+from operator import not_
+from typing import Any, Generic, Optional, ParamSpec, Set, Tuple, TypeVar
 
 import jax.tree as jt
 
+from jax_cookbook.misc import _fname
 
-def anyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
-    """Returns a function that returns the logical union of boolean functions.
+logger = logging.getLogger(__name__)
+
+
+P = ParamSpec("P")
+T_co = TypeVar("T_co", covariant=True)
+U = TypeVar("U")
+
+Pred = Callable[P, bool]
+
+
+def falsef(x: Any) -> bool:
+    return False
+
+
+def truef(x: Any) -> bool:
+    return True
+
+
+def anyf(func: Pred, *funcs: Pred) -> Pred:
+    """Logical OR of boolean predicates with the same signature.
 
     This is useful when we want to satisfy any of a number of `is_leaf`-like conditions
     without writing another ugly lambda. For example:
@@ -23,67 +43,187 @@ def anyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
 
     becomes `is_leaf=anyf(is_module, eqx.is_array)`.
     """
-    return lambda *args, **kwargs: any(
-        f(*args, **kwargs) for f in funcs
-    )
+    preds = (func,) + funcs
+
+    def inner(*args: P.args, **kwargs: P.kwargs) -> bool:
+        return any(f(*args, **kwargs) for f in preds)
+
+    # Metadata that makes sense for a composite
+    inner.__name__ = "anyf"
+    inner.__doc__ = "Returns True if any of: " + ", ".join(_fname(f) for f in preds)
+    try:
+        # Helpful for IDE call tips
+        inner.__signature__ = inspect.signature(func)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    functools.update_wrapper(inner, func, assigned=(), updated=())
+    return inner
 
 
-def allf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
-    """Returns a function that returns the logical intersection of boolean functions."""
-    return lambda *args, **kwargs: all(
-        f(*args, **kwargs) for f in funcs
-    )
+def allf(func: Pred, *funcs: Pred) -> Pred:
+    """Logical AND of boolean predicates with the same signature.
+
+    This is useful when we want to satisfy any of a number of `is_leaf`-like conditions
+    without writing another ugly lambda. For example:
+
+        `is_leaf=lambda x: is_module(x) or eqx.is_array(x)`
+
+    becomes `is_leaf=anyf(is_module, eqx.is_array)`.
+    """
+    preds = (func,) + funcs
+
+    def inner(*args: P.args, **kwargs: P.kwargs) -> bool:
+        return all(f(*args, **kwargs) for f in funcs)
+
+    # Metadata that makes sense for a composite
+    inner.__name__ = "allf"
+    inner.__doc__ = "Returns True if all of: " + ", ".join(_fname(f) for f in preds)
+    try:
+        # Helpful for IDE call tips
+        inner.__signature__ = inspect.signature(func)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    functools.update_wrapper(inner, func, assigned=(), updated=())
+    return inner
 
 
-def notf(func: Callable[..., bool]) -> Callable[..., bool]:
+def notf(func: Pred) -> Pred:
     """Returns a function that returns the negation of the input function."""
-    return lambda *args, **kwargs: not func(*args, **kwargs)
+
+    def inner(*args: P.args, **kwargs: P.kwargs) -> bool:
+        return not func(*args, **kwargs)
+
+    # Metadata that makes sense for a composite
+    inner.__name__ = f"not_{_fname(func)}"
+    inner.__doc__ = f"Returns False if {_fname(func)} returns True."
+    try:
+        # Helpful for IDE call tips
+        inner.__signature__ = inspect.signature(func)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    functools.update_wrapper(inner, func, assigned=(), updated=())
+    return inner
 
 
-def compose(*funcs):
+def compose_(*funcs):
     """Compose functions from left to right.
-    
+
     Args:
         *funcs: Functions to compose, applied left to right (first to last)
-        
+
     Returns:
         Composite function, whose arguments are those of the first function in `funcs`,
         and whose returns are those of the last.
     """
     if len(funcs) == 1:
         return funcs[0]
-    
+
     def composite(f, g):
         return lambda *args, **kwargs: g(f(*args, **kwargs))
-    
+
     return reduce(composite, funcs)
 
-    # return reduce(lambda f, g: lambda x: g(f(x)), funcs)
-    
+
+class ComposedFn(Generic[P, T_co]):
+    """Builds left-to-right function compositions via `.then()`."""
+
+    def __init__(self, f: Callable[P, T_co]):
+        self._fs: list[Callable[..., object]] = [f]  # runtime only
+
+    def then(self, g: Callable[[T_co], U]) -> "ComposedFn[P, U]":
+        self._fs.append(g)  # type: ignore[arg-type]
+        return self  # type: ignore[return-value]
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T_co:  # type: ignore[misc]
+        val = self._fs[0](*args, **kwargs)
+        for f in self._fs[1:]:
+            val = f(val)
+        return val  # type: ignore[return-value]
+
+
+def compose(f: Callable[P, T_co]) -> ComposedFn[P, T_co]:
+    """Alternative to `compose` that maintains the correct parameter and return types for the composite.
+
+    For example, `fn = compose_(f).then(g).then(h)` will type check as a `ComposedFn` whose generic
+    parameters are the parameter spec of `f` and the return type of `h`; in an IDE, if we attempt
+    to call `fn(...)`, we will see the signature of `f` and the return type of `h`.
+    """
+    return ComposedFn(f)
+
 
 def bundle(*funcs):
-    """Bundle functions into a single function that returns a tuple of their results.
-    """
+    """Bundle functions into a single function that returns a tuple of their results."""
+
     def _funcs(*args, **kwargs):
         return tuple(f(*args, **kwargs) for f in funcs)
+
     return _funcs
 
 
-def is_type(*types_) -> Callable[..., bool]:
+def is_type(*types_) -> Callable[[Any], bool]:
     """Returns a function that returns `True` if the input is an instance of any of the given types."""
-    return lambda x: any(
-        isinstance(x, t) for t in types_
-    )
+    return lambda x: any(isinstance(x, t) for t in types_)
 
 
-def is_not_type(*types) -> Callable[..., bool]:
+def is_not_type(*types) -> Callable[[Any], bool]:
     """Returns a function that returns `True` if the input is not an instance of any of the given types."""
-    return compose(not_, is_type(*types))
+    return compose(not_).then(is_type(*types))
 
 
 def identity(x):
     """The identity function."""
     return x
+
+
+_VAR_KW_PARAM = inspect.Parameter(
+    "__kwargs",
+    kind=inspect.Parameter.VAR_KEYWORD,
+    annotation=Mapping[str, Any],  # optional; omit if you don't care
+)
+
+
+def wrap_to_accept_var_kwargs(func: Callable, *, strict=False):
+    """
+    Wrap `func` so you can pass arbitrary **kwargs.
+    Unknown kwargs are dropped by default; set strict=True to raise instead.
+    """
+    try:
+        sig = inspect.signature(func)
+    except (ValueError, TypeError) as e:
+        # Builtins or weird callables we can't introspect.
+        if strict:
+            raise ValueError(f"Cannot introspect {func} to determine keyword arguments.") from e
+        logger.warning(
+            f"Cannot introspect {func} to determine keyword arguments. "
+            "Returning unwrapped function."
+        )
+        return func
+
+    params = sig.parameters.values()
+    has_varkw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+    if has_varkw:
+        return func
+
+    allowed = {
+        name
+        for name, p in sig.parameters.items()
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        if not kwargs:
+            return func(*args)
+        if strict:
+            unknown = set(kwargs) - allowed
+            if unknown:
+                unknown_list = ", ".join(sorted(unknown))
+                logger.warning(f"{func.__name__}() got unexpected keyword(s): {unknown_list}")
+        filtered = {k: v for k, v in kwargs.items() if k in allowed}
+        return func(*args, **filtered)
+
+    wrapped.__signature__ = sig.replace(parameters=[*sig.parameters.values(), _VAR_KW_PARAM])
+    return wrapped
 
 
 def _walk(v: Any) -> list[Any]:
@@ -92,7 +232,7 @@ def _walk(v: Any) -> list[Any]:
     with duplicates removed (by object identity).
     """
     items = jt.leaves(v)
-    
+
     if callable(v):
         items.append(v)
 
@@ -117,7 +257,7 @@ def _norm_code(co: types.CodeType) -> types.CodeType:
         elif hasattr(co, "co_lnotab"):
             kwargs["co_lnotab"] = b""
         return co.replace(**kwargs)
-    except Exception:                                # pragma: no cover
+    except Exception:  # pragma: no cover
         return co
 
 
@@ -125,7 +265,7 @@ def _bytes_for_constant(obj: Any) -> bytes:
     """Deterministic bytes for a non-callable constant."""
     try:
         return pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
-    except Exception:                                # pragma: no cover
+    except Exception:  # pragma: no cover
         return repr(obj).encode()
 
 
@@ -151,15 +291,15 @@ def _collect_parts(
     if _memo_code is None:
         _memo_code = set()
     assert parts is not None
-    
+
     ignore_types = tuple(x for x in ignore if isinstance(x, type))
-    
-    if (obj in ignore or isinstance(obj, ignore_types)):
+
+    if obj in ignore or isinstance(obj, ignore_types):
         # Treat as opaque constant: just pickle / repr its identity once
         if id(obj) not in _memo_obj:
             parts[f"ignored:{id(obj)}"] = _bytes_for_constant(obj)
             _memo_obj.add(id(obj))
-        return parts    
+        return parts
 
     # -- code objects ---------------------------------------------------- #
     if isinstance(obj, types.CodeType):
@@ -197,13 +337,13 @@ def _collect_parts(
         bound = obj.__call__
         func = getattr(bound, "__func__", bound)
         inst_state = getattr(obj, "__dict__", None)
-        
+
         if not hasattr(func, "__code__"):
             parts[f"opaque-callable:{id(obj)}"] = (
                 f"{type(obj).__module__}.{type(obj).__qualname__}".encode()
             )
             return parts
-    else:                                          # pragma: no cover
+    else:  # pragma: no cover
         raise TypeError(f"{obj!r} is not a pure-Python callable")
 
     # 1) byte-code + nested constants ------------------------------------ #
@@ -263,15 +403,15 @@ def _collect_parts(
     if func.__code__.co_names:
         blob = bytearray()
         g = func.__globals__
-        for name in func.__code__.co_names:   # keep order as-compiled
-            blob.extend(name.encode())        # always hash the identifier
-            if name in g:                     # plus its global value if it exists
+        for name in func.__code__.co_names:  # keep order as-compiled
+            blob.extend(name.encode())  # always hash the identifier
+            if name in g:  # plus its global value if it exists
                 val = g[name]
                 for leaf in _walk(val):
-                    _collect_parts(leaf, parts,
-                                   _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore)
-                    if (not callable(leaf)
-                        and not isinstance(leaf, types.CodeType)):
+                    _collect_parts(
+                        leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
+                    )
+                    if not callable(leaf) and not isinstance(leaf, types.CodeType):
                         blob.extend(_bytes_for_constant(leaf))
         parts[f"names:{id(func)}"] = bytes(blob)
 

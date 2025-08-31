@@ -1,9 +1,11 @@
 import functools
 import itertools
 import logging
+import math
 import string
 from collections import namedtuple
 from collections.abc import Callable, Hashable, Sequence
+from types import EllipsisType
 from typing import Any, Optional, Tuple, TypeVar, Union
 
 import equinox as eqx
@@ -15,9 +17,11 @@ import jax.tree_util as jtu
 import numpy as np
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 
+from jax_cookbook._func import falsef
 from jax_cookbook.misc import construct_tuple_like
 
-from ._func import is_type
+from ._func import is_type, truef
+from ._ldict import LDict, LDictConstructor
 from .misc import deep_merge, unique_generator
 
 logger = logging.getLogger(__name__)
@@ -29,7 +33,7 @@ T = TypeVar("T")
 def filter_wrap(filter_spec=None, is_leaf=None):
     """Returns a decorator that ensures a function only operates on tree leaves satisfying `filter_spec`."""
     if filter_spec is None:
-        filter_spec = lambda x: True
+        filter_spec = truef
 
     def decorator(func: Callable):
         @functools.wraps(func)
@@ -183,9 +187,7 @@ def take_multi(
         )
 
     # Remove only those singleton dimensions created above by int indexing
-    singleton_axes = [
-        axis for idxs, axis in zip(indices, axes) if isinstance(idxs, int)
-    ]
+    singleton_axes = [axis for idxs, axis in zip(indices, axes) if isinstance(idxs, int)]
     squeezed = jt.map(
         lambda xs: jnp.squeeze(xs, axis=singleton_axes),
         tree,
@@ -221,9 +223,7 @@ def array_set(
         A PyTree with the same structure as `tree`, where the array leaves of `items` have been inserted as the `idx`-th elements of the corresponding array leaves of `tree`.
     """
     arrays = eqx.filter(tree, eqx.is_array)
-    vals_update, other_update = eqx.partition(
-        values, jt.map(lambda x: x is not None, arrays)
-    )
+    vals_update, other_update = eqx.partition(values, jt.map(lambda x: x is not None, arrays))
     arrays_update = jt.map(lambda xs, x: xs.at[idx].set(x), arrays, vals_update)
     return eqx.combine(arrays_update, other_update)
 
@@ -470,9 +470,7 @@ def unstack(
     array_tree, other = eqx.partition(tree, eqx.is_array)
 
     # Split each array into a tuple of arrays
-    array_tuples_tree = jt.map(
-        lambda x: _TmpTuple(jnp.moveaxis(x, axis, 0)), array_tree
-    )
+    array_tuples_tree = jt.map(lambda x: _TmpTuple(jnp.moveaxis(x, axis, 0)), array_tree)
 
     # Transpose the tree to move the tuple to the outside
     tuple_of_array_trees = jt.transpose(
@@ -705,9 +703,7 @@ def array_bytes(tree: PyTree, duplicates: bool = False) -> int:
     arrays = eqx.filter(tree, eqx.is_array)
     if not duplicates:
         flat, treedef = jt.flatten(arrays)
-        arrays = jt.unflatten(
-            treedef, list(unique_generator(flat, replace_duplicates=True))
-        )
+        arrays = jt.unflatten(treedef, list(unique_generator(flat, replace_duplicates=True)))
     array_bytes = jt.map(lambda x: x.nbytes, arrays)
     array_bytes_int_leaves = [x for x in jt.leaves(array_bytes) if x is not None]
     return sum(array_bytes_int_leaves)
@@ -720,9 +716,7 @@ def struct_bytes(tree: PyTree[jax.ShapeDtypeStruct]) -> int:
     return jt.reduce(lambda x, y: x + y, struct_bytes)
 
 
-BuiltInKeyEntry = Union[
-    jtu.DictKey, jtu.SequenceKey, jtu.GetAttrKey, jtu.FlattenedIndexKey
-]
+BuiltInKeyEntry = Union[jtu.DictKey, jtu.SequenceKey, jtu.GetAttrKey, jtu.FlattenedIndexKey]
 
 
 def node_key_to_value(node_key: BuiltInKeyEntry) -> Any:
@@ -853,9 +847,7 @@ def labels(
     paths, leaves = zip(*leaves_with_path)
     labels = [_path_to_label(path[path_idx], join_with) for path in paths]
     if append_leaf:
-        labels = [
-            join_with.join([label, str(leaf)]) for label, leaf in zip(labels, leaves)
-        ]
+        labels = [join_with.join([label, str(leaf)]) for label, leaf in zip(labels, leaves)]
     return jt.unflatten(treedef, labels)
 
 
@@ -931,9 +923,7 @@ def labels_of_equal_leaves(
     Does pairwise equality comparisons between all leaves, using `(j)np.allclose` in
     case of arrays.
     """
-    tree_equal_paths = paths_of_equal_leaves(
-        tree, is_leaf=is_leaf, rtol=rtol, atol=atol
-    )
+    tree_equal_paths = paths_of_equal_leaves(tree, is_leaf=is_leaf, rtol=rtol, atol=atol)
     return jt.map(
         lambda xs: set(_path_to_label(x, join_with) for x in xs),
         tree_equal_paths,
@@ -941,9 +931,7 @@ def labels_of_equal_leaves(
     )
 
 
-def infer_batch_size(
-    tree: PyTree, exclude: Callable[..., bool] = lambda _: False
-) -> int:
+def infer_batch_size(tree: PyTree, exclude: Callable[..., bool] = lambda _: False) -> int:
     """Return the size of the first dimension of a tree's array leaves.
 
     Raise an error if any of the array leaves differ in the size of their first
@@ -1038,6 +1026,226 @@ def expand_split_keys(tree: PyTree, key_sep: str = ".") -> PyTree:
         leaves, treedef = jt.flatten(tree, is_leaf=is_type(dict))
         if jtu.treedef_is_leaf(treedef) and not isinstance(leaves, dict):
             return tree
-        return jt.unflatten(
-            treedef, [expand_split_keys(leaf, key_sep=key_sep) for leaf in leaves]
+        return jt.unflatten(treedef, [expand_split_keys(leaf, key_sep=key_sep) for leaf in leaves])
+
+
+def _annotation_func(node):
+    #! For use with `jtree.leaves_with_annotated_path`
+    if is_type(LDict)(node):
+        return LDict.of(node.label)
+    else:
+        return type(node)
+
+
+def tree_level_types(tree: PyTree, is_leaf=falsef) -> list[Callable]:
+    """Given a PyTree, return a PyTree of the types of each node along the path to the first leaf."""
+    # Get the path to the first leaf
+    leaves_with_typed_paths = leaves_with_annotated_path(
+        tree,
+        is_leaf=is_leaf,
+        annotation_func=_annotation_func,
+    )
+    if not leaves_with_typed_paths:
+        return []
+    first_path, _ = leaves_with_typed_paths[0]
+
+    node_types = [node_type for node_type, _ in first_path]
+
+    return node_types
+
+
+LevelSpec = str | type | LDictConstructor | EllipsisType
+
+
+def _as_descriptor(x: LevelSpec) -> Any:
+    if x is Ellipsis:
+        return Ellipsis
+    if isinstance(x, str):
+        if LDict is None:
+            raise TypeError("String level specs require LDict.of(...).")
+        return LDict.of(x)
+    if isinstance(x, (LDictConstructor, type)):  # type: ignore[arg-type]
+        return x
+    raise TypeError(f"Unsupported level specifier: {x!r}")
+
+
+def _make_matcher(token: LevelSpec) -> Callable[[Any], bool]:
+    if token is Ellipsis:
+        raise ValueError("Internal: matcher requested for Ellipsis.")
+    if isinstance(token, str):
+        if LDict is None:
+            raise TypeError("String level specs require LDict.")
+        return LDict.is_of(token)
+    if isinstance(token, LDictConstructor):
+        return token.predicate
+    if isinstance(token, type):
+        T = token
+        return lambda node: isinstance(node, T)
+    raise TypeError(f"Unsupported spec token: {token!r}")
+
+
+def _descriptor_key(x: Any) -> tuple[str, Any]:
+    if isinstance(x, LDictConstructor):
+        return ("ldict", x.label)
+    if isinstance(x, type):
+        return ("type", x)
+    raise TypeError(f"Unsupported level descriptor: {x!r}")
+
+
+def _probe_first_path(
+    tree: Any, *, is_leaf: Optional[Callable[[Any], bool]]
+) -> tuple[list[Any], list[jtu.PyTreeDef], list[int]]:
+    """Returns representative (nodes, treedefs, sizes) along a first-child path."""
+    nodes: list[Any] = []
+    treedefs: list[jtu.PyTreeDef] = []
+    sizes: list[int] = []
+
+    node = tree
+    while True:
+        if is_leaf is not None and is_leaf(node):
+            break
+        children, td = eqx.tree_flatten_one_level(node)
+        if jtu.treedef_is_leaf(td):
+            break
+        nodes.append(node)
+        treedefs.append(td)
+        sizes.append(len(children))
+        if not children:
+            break
+        node = children[0]  # uniformity assumption
+
+    return nodes, treedefs, sizes
+
+
+def _expand_spec_to_target(spec: Sequence[LevelSpec], current: list[Any]) -> list[Any]:
+    """Expand possibly-ellipsized `spec` into a full target list (no Ellipsis)."""
+    if not current:
+        return []
+    spec_norm = [_as_descriptor(x) for x in spec]
+    if sum(1 for x in spec_norm if x is Ellipsis) > 1:
+        raise ValueError("`spec` may contain at most one Ellipsis (`...`).")
+
+    cur_keys = [_descriptor_key(x) for x in current]
+    specified = [x for x in spec_norm if x is not Ellipsis]
+
+    # duplicates (by key) are not allowed
+    seen, dups = set(), []
+    for x in specified:
+        k = _descriptor_key(x)
+        if k in seen:
+            dups.append(x)
+        else:
+            seen.add(k)
+    if dups:
+        raise ValueError("Duplicate levels in spec.")
+
+    # unknowns
+    unknown = [x for x in specified if _descriptor_key(x) not in cur_keys]
+    if unknown:
+        raise ValueError(
+            "Unknown level(s) in spec (not present in tree): " + ", ".join(map(repr, unknown))
         )
+
+    if Ellipsis in spec_norm:
+        pos = spec_norm.index(Ellipsis)
+        before = [x for x in spec_norm[:pos] if x is not Ellipsis]
+        after = [x for x in spec_norm[pos + 1 :] if x is not Ellipsis]
+        placed = {_descriptor_key(x) for x in before + after}
+        middle = [x for x in current if _descriptor_key(x) not in placed]
+        return before + middle + after
+    else:
+        placed = {_descriptor_key(x) for x in spec_norm}
+        rest = [x for x in current if _descriptor_key(x) not in placed]
+        return list(spec_norm) + rest
+
+
+def _order_from_target(probe_nodes: list[Any], target: list[Any]) -> list[int]:
+    """Greedily match each target descriptor to the next unused axis in probe_nodes."""
+    depth = len(probe_nodes)
+    if len(target) != depth:
+        raise AssertionError("Target length must equal number of probed levels.")
+    used = [False] * depth
+    order: list[int] = []
+    for tok in target:
+        matcher = _make_matcher(
+            tok if tok is not Ellipsis else target[0]
+        )  # tok is never Ellipsis here
+        for i, node in enumerate(probe_nodes):
+            if not used[i] and matcher(node):
+                used[i] = True
+                order.append(i)
+                break
+        else:
+            raise ValueError(f"Level {tok!r} not found (or already used) in tree.")
+    return order
+
+
+def _compose_treedefs_in_order(treedefs: list[jtu.PyTreeDef], order: list[int]) -> jtu.PyTreeDef:
+    td = treedefs[order[0]]
+    for idx in order[1:]:
+        td = td.compose(treedefs[idx])  # outer→inner
+    return td
+
+
+def _leaf_permutation_for_axes(sizes: list[int], order: list[int]) -> np.ndarray:
+    """Index map idx s.t. new_leaves = [old_leaves[i] for i in idx]."""
+    if not sizes:
+        return np.array([], dtype=int)
+    N = math.prod(sizes)
+    if N == 0:
+        return np.array([], dtype=int)
+    return np.arange(N, dtype=int).reshape(sizes).transpose(order).ravel()
+
+
+def rearrange_uniform_tree(
+    tree: Any,
+    spec: Sequence[LevelSpec],
+    *,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+) -> Any:
+    """Reorder levels of a uniform PyTree according to `spec`.
+
+    Args:
+        tree: A PyTree whose nodes at each level all have the same structure (treedef).
+            Note that there is no requirement that all the leaves are the same type or shape,
+            so long as `is_leaf` demarcates a uniform level at the bottom of the tree.
+        spec: A sequence of level descriptors, specifying how to rearrange the tree. At most one
+            Ellipsis (`...`) may be included, which keeps the remaining levels in their original
+            relative order.
+        is_leaf: An optional function that returns `True` for nodes which should be treated as
+            leaves; i.e. we will only deal with levels above this boundary, and any transposition
+            of a level to the "bottom" will result in it being placed just above this boundary.
+
+    Note:
+        Level descriptors in `spec` may be:
+            • `str` (interpreted as `LDict.of(label)`)
+            • `type` objects (e.g. `tuple`, `list`, custom classes)
+            • `LDictConstructor` (e.g. `LDict.of("label")`).
+            • at most one `Ellipsis`/`...` (keeps the remaining levels in original relative order;
+            the order is defined by `tree_level_types(tree, is_leaf)`).
+    """
+    # Probe one representative outer→inner path.
+    probe_nodes, treedefs, sizes = _probe_first_path(tree, is_leaf=is_leaf)
+    depth = len(treedefs)
+    if depth == 0 or not sizes or math.prod(sizes) == 0:
+        return tree
+
+    # Use your current ordering to expand spec → full target (no Ellipsis).
+    current = tree_level_types(tree, is_leaf=is_leaf)  # provided elsewhere in your module
+    target = _expand_spec_to_target(spec, current)
+
+    # Greedily map target descriptors onto the probed axes to get a stable order.
+    order = _order_from_target(probe_nodes, target)
+
+    # Compose the treedef and apply a single global leaf permutation.
+    td_target = _compose_treedefs_in_order(treedefs, order)
+
+    leaves, _ = jt.flatten(tree, is_leaf=is_leaf)
+    N = len(leaves)
+    assert N == math.prod(sizes), (
+        f"Uniformity mismatch: {N} leaves vs product(sizes)={math.prod(sizes)}. "
+        "Ensure the tree is uniform and `is_leaf` marks the intended boundary."
+    )
+    idx = _leaf_permutation_for_axes(sizes, order)
+    new_leaves = [leaves[i] for i in idx.tolist()]
+    return jt.unflatten(td_target, new_leaves)

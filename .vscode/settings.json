@@ -1,0 +1,6 @@
+{
+    "python.analysis.include": [
+        "jax_cookbook",
+        "tests"
+    ]
+}

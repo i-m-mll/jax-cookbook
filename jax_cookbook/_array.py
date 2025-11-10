@@ -1,23 +1,57 @@
 from collections.abc import Sequence
 from typing import Literal, Optional, TypeVar
-from equinox import Module, field
+
+import jax.numpy as jnp
 import jax.tree as jt
+from equinox import Module, field
 from jaxtyping import Array, ArrayLike, PyTree
 
 import jax_cookbook.tree as jtree
 from jax_cookbook._func import is_type
 
 
+class MaskedArray(Module):
+    """Array with associated boolean mask indicating valid (unmasked) elements.
+
+    This is used to represent arrays where some elements may be padding or invalid
+    (e.g., due to alignment operations). The mask is True where data is valid,
+    False where it is padding/invalid.
+
+    Note: This is a PyTree node (via equinox.Module). When used with JAX tree
+    operations like stacking, the data and mask arrays are transformed separately.
+    If you need to treat MaskedArray as an atomic leaf in tree operations, use
+    `is_leaf=is_type(MaskedArray)` in your tree traversal.
+
+    Attributes:
+        data: The array data (including padded/masked regions).
+        mask: Boolean array with same shape as data, True where data is valid.
+    """
+    data: Array
+    mask: Array  # bool array, True where data is valid
+
+    def unwrap(self, invalid_value=jnp.nan):
+        """Convert to a regular array with masked (invalid) values replaced.
+
+        Args:
+            invalid_value: Value to use for masked elements. Defaults to NaN.
+
+        Returns:
+            Array with same shape as `data`, where masked elements are set to `invalid_value`.
+        """
+        return jnp.where(self.mask, self.data, invalid_value)
+
+
 class ArrayLikeWrapper(Module):
     """Metadata-carrying wrapper for ArrayLike objects.
-    
-    Metadata fields are static, and thus excluded from JAX transformations. Any modifications to 
-    the metadata to remain valid after such transformations, must be implemented separately. 
+
+    Metadata fields are static, and thus excluded from JAX transformations. Any modifications to
+    the metadata to remain valid after such transformations, must be implemented separately.
     """
-    value: ArrayLike   
+
+    value: ArrayLike
     axes_names: Optional[Sequence[str]] = field(default=None, static=True)
     label: Optional[str | Sequence[str]] = field(default=None, static=True)
-    
+
     def __check_init__(self):
         if self.axes_names is not None:
             if isinstance(self.value, Array):
@@ -39,42 +73,68 @@ class ArrayLikeWrapper(Module):
                         f"in value ({self.value.ndim})"
                     )
                 elif Ellipsis in self.axes_names:
-                    #? Replace with None?
+                    # ? Replace with None?
                     pass
             else:
                 raise ValueError("axes_names should not be provided for non-array values")
-                
+
             raise ValueError(
                 f"Length of axes_names ({len(self.axes_names)}) must match the number of "
                 "dimensions in value ({self.value.ndim})"
             )
-            
+
         if self.label is not None:
-            if (
-                not isinstance(self.label, str)
-                and not (
-                    isinstance(self.label, Sequence) 
-                    and all(isinstance(x, str) for x in self.label)
-                )
+            if not isinstance(self.label, str) and not (
+                isinstance(self.label, Sequence) and all(isinstance(x, str) for x in self.label)
             ):
-                raise TypeError(f"label must be a string or sequence of strings; got {type(self.label)}")
-    
+                raise TypeError(
+                    f"label must be a string or sequence of strings; got {type(self.label)}"
+                )
+
 
 def unwrap_arraylikes(tree: PyTree[ArrayLikeWrapper]) -> PyTree[ArrayLike]:
     """Unwrap ArrayLikeWrapper objects in a PyTree."""
     return jt.map(lambda x: x.value, tree, is_leaf=is_type(ArrayLikeWrapper))
 
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 def unwrap_arraylikes_and_labels(
-    tree: PyTree[ArrayLikeWrapper, 'T'],
-    label_fmt: Literal['short', 'medium', 'full'] = 'medium',
-) -> tuple[PyTree[ArrayLike, 'T'], PyTree[str, 'T']]:
+    tree: PyTree[ArrayLikeWrapper, "T"],
+    label_fmt: Literal["short", "medium", "full"] = "medium",
+) -> tuple[PyTree[ArrayLike, "T"], PyTree[str, "T"]]:
     """Unwrap ArrayLikeWrapper objects in a PyTree and return both values and labels."""
-    return jtree.unzip(jt.map(
-        lambda x: (x.value, getattr(x.label, label_fmt)), 
-        tree, 
-        is_leaf=is_type(ArrayLikeWrapper),
-    ))
+    return jtree.unzip(
+        jt.map(
+            lambda x: (x.value, getattr(x.label, label_fmt)),
+            tree,
+            is_leaf=is_type(ArrayLikeWrapper),
+        )
+    )
+
+
+def part_by_idx(arr: Array, idxs: Array, axis: int = 0) -> tuple[Array, Array]:
+    """
+    Split `arr` into (selected, remainder) along a specified axis.
+
+    Args:
+        arr: Array to split.
+        idxs: Indices along `axis` to select.
+        axis: Axis along which to select (default: 0).
+
+    Returns:
+        selected: arr indexed by `idxs` along `axis`
+        remainder: arr with those indices excluded
+    """
+    # Normalize axis
+    axis = axis % arr.ndim
+    n = arr.shape[axis]
+
+    # Create boolean mask along the target axis
+    mask = jnp.zeros(n, dtype=bool).at[idxs].set(True)
+
+    # Use jnp.take and boolean indexing with `jax.vmap`-compatible broadcasting
+    selected = jnp.take(arr, idxs, axis=axis)
+    remainder = jnp.compress(~mask, arr, axis=axis)
+    return selected, remainder

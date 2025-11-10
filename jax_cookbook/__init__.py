@@ -6,6 +6,8 @@
 
 from ._array import (
     ArrayLikeWrapper,
+    MaskedArray,
+    part_by_idx,
     unwrap_arraylikes,
     unwrap_arraylikes_and_labels,
 )
@@ -42,9 +44,10 @@ from .progress import (
 
 __all__ = [
     "ArrayLikeWrapper",
-    "MultiVmapAxes",
     "LDict",
     "LDictConstructor",
+    "MaskedArray",
+    "MultiVmapAxes",
     "allf",
     "anyf",
     "arrays_to_lists",
@@ -61,6 +64,7 @@ __all__ = [
     "map_rich",
     "natural_to_sequential_axes",
     "notf",
+    "part_by_idx",
     "save",
     "unwrap_arraylikes",
     "unwrap_arraylikes_and_labels",

@@ -6,10 +6,10 @@ import pickle
 import re
 import types
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from functools import reduce, wraps
 from operator import not_
-from typing import Any, Generic, Optional, ParamSpec, Set, Tuple, TypeVar
+from typing import Any, Generic, ParamSpec, Set, Tuple, TypeVar
 
 import jax.tree as jt
 
@@ -182,17 +182,26 @@ _VAR_KW_PARAM = inspect.Parameter(
 )
 
 
-def wrap_to_accept_var_kwargs(func: Callable, *, strict=False):
+def wrap_to_accept_var_kwargs(
+    func: Callable, *, strict=False, allowed_extra: Sequence[str] = ()
+):
     """
     Wrap `func` so you can pass arbitrary **kwargs.
     Unknown kwargs are dropped by default; set strict=True to raise instead.
+
+    TODO: I think this fails in the particular case that `func` has a positional arg with the
+    TODO: same name as one of the `kwargs` that the wrapper ends up taking. Since we'll
+    TODO: infer "ah, we should include `some_var`, it is one of the arg names" but actually this
+    TODO: only applies if it's a kwarg.
     """
     try:
         sig = inspect.signature(func)
     except (ValueError, TypeError) as e:
         # Builtins or weird callables we can't introspect.
         if strict:
-            raise ValueError(f"Cannot introspect {func} to determine keyword arguments.") from e
+            raise ValueError(
+                f"Cannot introspect {func} to determine keyword arguments."
+            ) from e
         logger.warning(
             f"Cannot introspect {func} to determine keyword arguments. "
             "Returning unwrapped function."
@@ -207,8 +216,9 @@ def wrap_to_accept_var_kwargs(func: Callable, *, strict=False):
     allowed = {
         name
         for name, p in sig.parameters.items()
-        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    }
+        if p.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    } | set(allowed_extra)
 
     @wraps(func)
     def wrapped(*args, **kwargs):
@@ -218,11 +228,15 @@ def wrap_to_accept_var_kwargs(func: Callable, *, strict=False):
             unknown = set(kwargs) - allowed
             if unknown:
                 unknown_list = ", ".join(sorted(unknown))
-                logger.warning(f"{func.__name__}() got unexpected keyword(s): {unknown_list}")
+                logger.warning(
+                    f"{func.__name__}() got unexpected keyword(s): {unknown_list}"
+                )
         filtered = {k: v for k, v in kwargs.items() if k in allowed}
         return func(*args, **filtered)
 
-    wrapped.__signature__ = sig.replace(parameters=[*sig.parameters.values(), _VAR_KW_PARAM])
+    wrapped.__signature__ = sig.replace(
+        parameters=[*sig.parameters.values(), _VAR_KW_PARAM]
+    )
     return wrapped
 
 
@@ -314,7 +328,11 @@ def _collect_parts(
             if isinstance(const, types.CodeType) or callable(const):
                 for leaf in _walk(const):
                     _collect_parts(
-                        leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
+                        leaf,
+                        parts,
+                        _memo_obj=_memo_obj,
+                        _memo_code=_memo_code,
+                        ignore=ignore,
                     )
             else:
                 parts[f"const:{id(co)}:{idx}"] = _bytes_for_constant(const)
@@ -347,7 +365,9 @@ def _collect_parts(
         raise TypeError(f"{obj!r} is not a pure-Python callable")
 
     # 1) byte-code + nested constants ------------------------------------ #
-    _collect_parts(func.__code__, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore)
+    _collect_parts(
+        func.__code__, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
+    )
 
     # 2) decorators ------------------------------------------------------- #
     deco_bytes = b""
@@ -377,7 +397,11 @@ def _collect_parts(
         for v in defaults_seq:
             for leaf in _walk(v):
                 _collect_parts(
-                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
+                    leaf,
+                    parts,
+                    _memo_obj=_memo_obj,
+                    _memo_code=_memo_code,
+                    ignore=ignore,
                 )
                 if not callable(leaf):
                     blob.extend(_bytes_for_constant(leaf))
@@ -393,7 +417,11 @@ def _collect_parts(
             val = cell.cell_contents
             for leaf in _walk(val):
                 _collect_parts(
-                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
+                    leaf,
+                    parts,
+                    _memo_obj=_memo_obj,
+                    _memo_code=_memo_code,
+                    ignore=ignore,
                 )
                 if not callable(leaf):
                     blob.extend(_bytes_for_constant(leaf))
@@ -409,7 +437,11 @@ def _collect_parts(
                 val = g[name]
                 for leaf in _walk(val):
                     _collect_parts(
-                        leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
+                        leaf,
+                        parts,
+                        _memo_obj=_memo_obj,
+                        _memo_code=_memo_code,
+                        ignore=ignore,
                     )
                     if not callable(leaf) and not isinstance(leaf, types.CodeType):
                         blob.extend(_bytes_for_constant(leaf))
@@ -423,7 +455,11 @@ def _collect_parts(
             v = inst_state[k]
             for leaf in _walk(v):
                 _collect_parts(
-                    leaf, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
+                    leaf,
+                    parts,
+                    _memo_obj=_memo_obj,
+                    _memo_code=_memo_code,
+                    ignore=ignore,
                 )
                 if not callable(leaf):
                     blob.extend(_bytes_for_constant(leaf))

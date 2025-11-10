@@ -216,17 +216,24 @@ class LDictConstructor:
     @overload
     def __call__(self, __mapping: Mapping[_K, _V], /) -> LDict[_K, _V]: ...
     @overload
+    def __call__(self, __pairs: Iterable[tuple[_K, _V]], /) -> LDict[_K, _V]: ...
+    @overload
     def __call__(self, /, **kwargs: _V) -> LDict[str, _V]: ...
-
-    def __call__(self, __mapping: Optional[Mapping[Any, Any]] = None, /, **kwargs: Any):
+    def __call__(
+        self,
+        __arg: Mapping[Any, Any] | Iterable[tuple[Any, Any]] | None = None,
+        /,
+        **kwargs: Any,
+    ):
         """Call with either a single mapping positional arg or keyword args (not both)."""
-        if __mapping is not None and kwargs:
+        if __arg is not None and kwargs:
             raise TypeError("Pass either a mapping positional argument or keyword args, not both.")
-        data: Mapping[Any, Any]
-        if __mapping is not None:
-            data = __mapping
+        if __arg is None:
+            data: Mapping[Any, Any] = dict(kwargs)
+        elif isinstance(__arg, Mapping):
+            data = __arg
         else:
-            data = dict(kwargs)
+            data = dict(__arg)
         return LDict(self.label, data)
 
     def __repr__(self) -> str:
@@ -259,6 +266,11 @@ class LDictConstructor:
             return False
 
         return is_ldict_of
+
+
+def is_ldict_of(label: str) -> Callable[[Any], bool]:
+    """Return a predicate checking if an object is an `LDict` with a given label."""
+    return LDict.is_of(label)
 
 
 #! This might not be doable until update to Python 3.12

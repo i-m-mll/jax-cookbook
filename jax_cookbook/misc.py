@@ -15,6 +15,9 @@ from typing import Any, Iterable, Optional, Tuple, TypeVar, Union, cast
 
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
+from jax import lax
+from jaxtyping import Array
 
 logger = logging.getLogger(__name__)
 
@@ -205,3 +208,103 @@ def split_by(x, sizes, axis=0):
 
 def _fname(f: object) -> str:
     return getattr(f, "__name__", f.__class__.__name__)
+
+
+def moving_avg(x, K):  # x: [T]
+    # simple causal K-window mean, shape -> [T - K + 1]
+    c = jnp.cumsum(jnp.pad(x, (1, 0)))  # prefix sum with 0 at start
+    wsum = c[K:] - c[:-K]
+    return wsum / K
+
+
+def softmin(values, tau, axis=-1, keepdims=False):
+    m = jnp.min(values, axis=axis, keepdims=True)
+    out = -tau * jnp.log(jnp.sum(jnp.exp(-(values - m) / tau), axis=axis, keepdims=True)) + m
+    return out if keepdims else jnp.squeeze(out, axis=axis)
+
+
+def mse(x, y):
+    """Mean squared error."""
+    return jt.map(
+        lambda x, y: jnp.mean((x - y) ** 2),
+        x,
+        y,
+    )
+
+
+def nan_safe_mse(
+    preds: Array,
+    targets: Array,
+) -> Array:
+    """
+    Calculates MSE safely for gradients when targets have NaN entries.
+
+    Assumes that if `pred` has NaN entries, then `target` will also have NaNs in the same rows.
+
+    Computes a mask of the NaN entries in `targets`, replaces NaNs with zeros,
+    proceeds with MSE calculation, then masks the NaN entries out of the result
+    prior to aggregation.
+    """
+    valid_mask = ~jnp.isnan(targets)
+    targets_cleaned = jnp.nan_to_num(targets, nan=0.0)
+    squared_errors = (preds - targets_cleaned) ** 2
+    masked_squared_errors = jnp.where(valid_mask, squared_errors, 0.0)
+    sum_of_squared_errors = jnp.sum(masked_squared_errors)
+    num_valid_elements = jnp.sum(valid_mask)
+    return sum_of_squared_errors / jnp.maximum(num_valid_elements, 1.0)
+
+
+def window_take(
+    arr: jnp.ndarray,
+    idxs: jnp.ndarray,  # shape (N,), int32/64
+    bounds: tuple[int, int],  # (lo, hi), hi exclusive; length = hi - lo (must be > 0)
+    *,
+    axis_p: int,  # slice-along axis
+    axis_q: int,  # per-entry axis (len N)
+    mode: str = "pad",  # "pad" or "clip"
+    pad_value=0,
+):
+    """Return, for each index along axis_q, a length-(hi-lo) slice along axis_p
+    starting at (idx + lo). Output has same ndim as arr, with axis_p length = hi-lo.
+    """
+    lo, hi = bounds
+    L = int(hi - lo)
+    if L <= 0:
+        raise ValueError("hi - lo must be > 0")
+    if axis_p == axis_q:
+        raise ValueError("axis_p and axis_q must be different")
+
+    ndim = arr.ndim
+    p = axis_p % ndim
+    q = axis_q % ndim
+    if arr.shape[q] != idxs.shape[0]:
+        raise ValueError("idxs length must match arr.shape[axis_q]")
+
+    # Edge handling
+    if mode == "pad":
+        pad_left = max(0, -lo)
+        pad_right = max(0, hi - 1)
+        pad_width = [(0, 0)] * ndim
+        pad_width[p] = (pad_left, pad_right)
+        arrX = jnp.pad(arr, pad_width, constant_values=pad_value)
+        starts = (idxs + lo + pad_left).astype(jnp.int32)
+    elif mode == "clip":
+        P = arr.shape[p]
+        starts = jnp.clip(idxs + lo, 0, P - L).astype(jnp.int32)
+        arrX = arr
+    else:
+        raise ValueError("mode must be 'pad' or 'clip'")
+
+    # After vmapping over axis_q, that axis is removed inside the mapped fn.
+    # Adjust the slice axis index accordingly.
+    axis_p_in_mapped = p - (1 if p > q else 0)
+
+    def slice_one(a_i, s_i):
+        # a_i has arr with axis_q removed
+        return lax.dynamic_slice_in_dim(a_i, s_i, L, axis=axis_p_in_mapped)
+
+    # Map arr over its axis_q and idxs over its axis 0
+    out = jax.vmap(slice_one, in_axes=(q, 0), out_axes=0)(arrX, starts)
+    # Put the mapped axis back where axis_q originally was
+    out = jnp.moveaxis(out, 0, q)
+    return out

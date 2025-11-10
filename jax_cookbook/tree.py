@@ -6,7 +6,7 @@ import string
 from collections import namedtuple
 from collections.abc import Callable, Hashable, Sequence
 from types import EllipsisType
-from typing import Any, Optional, Tuple, TypeVar, Union
+from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
 
 import equinox as eqx
 import jax
@@ -17,17 +17,20 @@ import jax.tree_util as jtu
 import numpy as np
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 
-from jax_cookbook._func import falsef
-from jax_cookbook.misc import construct_tuple_like
-
-from ._func import is_type, truef
+from ._func import falsef, is_type, truef
 from ._ldict import LDict, LDictConstructor
-from .misc import deep_merge, unique_generator
+from ._types import is_none
+from .misc import construct_tuple_like, deep_merge, unique_generator
 
 logger = logging.getLogger(__name__)
 
 
+HR = "\u2500" * 80  # Horizontal rule
+
+
 T = TypeVar("T")
+S = TypeVar("S")
+TupleT = TypeVar("TupleT", bound=tuple)
 
 
 def filter_wrap(filter_spec=None, is_leaf=None):
@@ -46,6 +49,23 @@ def filter_wrap(filter_spec=None, is_leaf=None):
         return wrapper
 
     return decorator
+
+
+def first_leaf(tree, is_leaf: Optional[Callable] = None):
+    """Return the first leaf of a tree."""
+    return jt.leaves(tree, is_leaf=is_leaf)[0]
+
+
+def first_leaf_shape(tree):
+    """Return the shape of the first leaf of a tree of arrays."""
+    arrays = eqx.filter(tree, eqx.is_array)
+    return first_leaf(arrays, is_leaf=None).shape
+
+
+@filter_wrap(eqx.is_array)
+def shapes(tree):
+    """Returns a tree of the shapes of the leaves of `tree`."""
+    return jt.map(lambda x: x.shape, tree)
 
 
 # An alternative to partition-combine logic in `filter_wrap` is to define a custom `tree_map` function
@@ -380,12 +400,6 @@ def make_named_dict_subclass(name):
     return cls
 
 
-@filter_wrap(eqx.is_array)
-def shapes(tree):
-    """Returns a tree of the shapes of the leaves of `tree`."""
-    return jt.map(lambda x: x.shape, tree)
-
-
 # TODO: There could be a variant of this for pure array trees, that collapses the
 # tree into a single array and uses `moveaxis`
 # TODO: There is also a way to modify this so that we don't need to assume
@@ -539,9 +553,6 @@ def _map(
     return jt.map(f, tree, *rest, is_leaf=is_leaf)
 
 
-S = TypeVar("S")
-
-
 # def map_module(
 #     f: Callable[[Any], S],
 #     tree: PyTree[Any, "T"],
@@ -555,10 +566,6 @@ S = TypeVar("S")
 #     """
 
 #     return jt.map(f, tree, *rest, is_leaf=is_module)
-
-
-# Horizontal rule
-HR = "\u2500" * 80
 
 
 def map_unzip(
@@ -575,9 +582,6 @@ def map_unzip(
     """
     results = jt.map(f, tree, *rest, is_leaf=is_leaf)
     return unzip(results)
-
-
-TupleT = TypeVar("TupleT", bound=tuple)
 
 
 def unzip(
@@ -632,7 +636,7 @@ def zip_named(
     return zipped, LeafTuple
 
 
-def prefix_expand(
+def prefix_expand_simple(
     prefix: PyTree,
     tree: PyTree,
     is_leaf: Optional[Callable] = None,
@@ -644,6 +648,60 @@ def prefix_expand(
         return jt.map(lambda _: leaf, subtree, is_leaf=is_leaf)
 
     return jt.map(expand_leaf, prefix, tree, is_leaf=is_leaf_prefix)
+
+
+def _prefix_expand_inner(
+    tree1: PyTree,
+    tree2: PyTree,
+    is_leaf: Optional[Callable] = None,
+    is_leaf_prefix: Optional[Callable] = None,
+) -> PyTree:
+    """Expands a prefix of a PyTree to have the same structure as the PyTree."""
+
+    def expand_leaf(leaf, subtree):
+        return jt.map(lambda _: leaf, subtree, is_leaf=is_leaf)
+
+    return jt.map(expand_leaf, tree1, tree2, is_leaf=is_leaf_prefix)
+
+
+def prefix_expand(
+    tree1: PyTree,
+    tree2: PyTree,
+    is_leaf: Optional[Callable] = None,
+    is_leaf_prefix: Optional[PyTree[Callable]] = None,
+) -> PyTree:
+    """Expands a prefix of a PyTree to have the same structure as the PyTree.
+
+    Handles cases where the outer structure of tree1 doesn't match tree2 by
+    automatically descending through tree1 until finding nodes of the same type
+    as tree2, then applying prefix expansion.
+
+    Args:
+        tree1: PyTree to expand (source)
+        tree2: PyTree to match structure of (target)
+        is_leaf: Leaf predicate for the expansion operation
+        is_leaf_prefix: Leaf predicate for the prefix descent operation
+
+    Returns:
+        tree1 expanded to match the structure of tree2
+    """
+    ilp_tree = _prefix_expand_inner(
+        is_leaf_prefix,
+        tree1,
+        is_leaf=is_type(type(tree2)),
+        is_leaf_prefix=is_none,
+    )
+    return jt.map(
+        lambda prefix, ilp: _prefix_expand_inner(
+            prefix,
+            tree2,
+            is_leaf=is_leaf,
+            is_leaf_prefix=ilp,
+        ),
+        tree1,
+        ilp_tree,
+        is_leaf=is_type(type(tree2)),
+    )
 
 
 def _character_generator():
@@ -1037,7 +1095,7 @@ def _annotation_func(node):
         return type(node)
 
 
-def tree_level_types(tree: PyTree, is_leaf=falsef) -> list[Callable]:
+def tree_level_types(tree: PyTree, is_leaf=falsef) -> list[type | LDictConstructor]:
     """Given a PyTree, return a PyTree of the types of each node along the path to the first leaf."""
     # Get the path to the first leaf
     leaves_with_typed_paths = leaves_with_annotated_path(
@@ -1054,7 +1112,7 @@ def tree_level_types(tree: PyTree, is_leaf=falsef) -> list[Callable]:
     return node_types
 
 
-LevelSpec = str | type | LDictConstructor | EllipsisType
+LevelSpec: TypeAlias = str | type | LDictConstructor | EllipsisType
 
 
 def _as_descriptor(x: LevelSpec) -> Any:
@@ -1092,13 +1150,23 @@ def _descriptor_key(x: Any) -> tuple[str, Any]:
     raise TypeError(f"Unsupported level descriptor: {x!r}")
 
 
-def _probe_first_path(
-    tree: Any, *, is_leaf: Optional[Callable[[Any], bool]]
-) -> tuple[list[Any], list[jtu.PyTreeDef], list[int]]:
-    """Returns representative (nodes, treedefs, sizes) along a first-child path."""
+def first_path_node_structure(
+    tree: Any,
+    *,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+) -> tuple[list[Any], list[jtu.PyTreeDef]]:
+    """Returns (nodes, node_treedefs) along a first-child path.
+
+    Here, `node_treedefs` are the *flat* structures of each node along the path, i.e. *as if their
+    children were leaves*. In the case that the tree is homogeneous (i.e. transposable) at every
+    level, we can recover the treedef for the full tree using (for example):
+
+    ```
+    treedef = functools.reduce(lambda td1, td2: td1.compose(td2), node_treedefs)
+    ```
+    """
     nodes: list[Any] = []
     treedefs: list[jtu.PyTreeDef] = []
-    sizes: list[int] = []
 
     node = tree
     while True:
@@ -1109,12 +1177,11 @@ def _probe_first_path(
             break
         nodes.append(node)
         treedefs.append(td)
-        sizes.append(len(children))
         if not children:
             break
         node = children[0]  # uniformity assumption
 
-    return nodes, treedefs, sizes
+    return nodes, treedefs
 
 
 def _expand_spec_to_target(spec: Sequence[LevelSpec], current: list[Any]) -> list[Any]:
@@ -1198,11 +1265,11 @@ def _leaf_permutation_for_axes(sizes: list[int], order: list[int]) -> np.ndarray
 
 
 def rearrange_uniform_tree(
-    tree: Any,
+    tree: PyTree,
     spec: Sequence[LevelSpec],
     *,
     is_leaf: Optional[Callable[[Any], bool]] = None,
-) -> Any:
+) -> PyTree:
     """Reorder levels of a uniform PyTree according to `spec`.
 
     Args:
@@ -1225,7 +1292,8 @@ def rearrange_uniform_tree(
             the order is defined by `tree_level_types(tree, is_leaf)`).
     """
     # Probe one representative outer→inner path.
-    probe_nodes, treedefs, sizes = _probe_first_path(tree, is_leaf=is_leaf)
+    probe_nodes, treedefs = first_path_node_structure(tree, is_leaf=is_leaf)
+    sizes = [td.num_leaves for td in treedefs]
     depth = len(treedefs)
     if depth == 0 or not sizes or math.prod(sizes) == 0:
         return tree
@@ -1249,3 +1317,25 @@ def rearrange_uniform_tree(
     idx = _leaf_permutation_for_axes(sizes, order)
     new_leaves = [leaves[i] for i in idx.tolist()]
     return jt.unflatten(td_target, new_leaves)
+
+
+# def swap_adjacent_levels(
+#     is_outer: Callable[[Any], bool],
+#     is_inner: Optional[Callable[[Any], bool]] = None,
+#     tree: PyTree,
+# ):
+#     """Swap two adjacent levels of PyTree.
+
+#     Arguments:
+#         is_outer: A function that returns `True` for nodes in the outer level to swap.
+#         is_inner: A function that returns `True` for nodes in the inner level to swap.
+#         tree: The PyTree to swap levels in.
+#     """
+
+#     subtrees, outer_treedef = jt.flatten(tree, is_leaf=is_outer)
+#     is_leaf = None
+#     def transpose_subtree(subtree):
+
+#     subtrees_transposed = [
+#         jt.transpose(jt.structure(subtree)) for subtree in inner_wrapped
+#     ]

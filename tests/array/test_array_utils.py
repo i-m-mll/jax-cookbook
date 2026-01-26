@@ -5,7 +5,7 @@ pytest.importorskip("jax")
 import jax.numpy as jnp
 import chex
 
-from jax_cookbook._array import ArrayLikeWrapper, unwrap_arraylikes_and_labels
+from jax_cookbook._array import ArrayLikeWrapper, part_by_idx, unwrap_arraylikes, unwrap_arraylikes_and_labels
 from jax_cookbook.tree import array_set
 
 
@@ -22,6 +22,20 @@ def test_unwrap_arraylikes_and_labels_with_sequence_label():
     _, labels_full = unwrap_arraylikes_and_labels(tree, label_fmt="full")
     assert labels_short == ["a"]
     assert labels_full == ["a/b"]
+
+
+def test_unwrap_arraylikes():
+    tree = [ArrayLikeWrapper(jnp.array([1, 2])), "x"]
+    out = unwrap_arraylikes(tree)
+    assert jnp.array_equal(out[0], jnp.array([1, 2]))
+    assert out[1] == "x"
+
+
+def test_part_by_idx():
+    arr = jnp.arange(6)
+    selected, remainder = part_by_idx(arr, jnp.array([1, 3, 5]), axis=0)
+    assert jnp.array_equal(selected, jnp.array([1, 3, 5]))
+    assert jnp.array_equal(remainder, jnp.array([0, 2, 4]))
 
 
 def test_array_set_updates_arrays_only():

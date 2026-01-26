@@ -73,7 +73,7 @@ def save(
     path: str | Path,
     tree: PyTree[eqx.Module],
     hyperparameters: Optional[dict] = None,
-    dump_fn: Callable = lambda f, hps: json.dump(hps, f, sort_keys=True),
+    dump_fn: Callable = json_dump,
 ) -> None:
     """Save a PyTree to disk along with hyperparameters used to generate it.
 
@@ -91,9 +91,8 @@ def save(
             `setup_func` that were used to generate the PyTree, and upon
             loading, will be used to regenerate an appropriate skeleton to
             populate with the saved values from `tree`.
-        sort_keys: Whether to sort the hyperparameters by key before serialising.
-            This ensures that if we load and reserialise the file, it won't hash
-            differently due to key order changes.
+        dump_fn: Function that writes hyperparameters to the open file handle. It must
+            write bytes when the file is opened in binary mode.
     """
     with open(path, "wb") as f:
         dump_fn(f, hyperparameters)

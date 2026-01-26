@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Literal, Optional, TypeVar
+from typing import Any, Literal, Optional, TypeVar
 
 import jax.numpy as jnp
 import jax.tree as jt
@@ -89,8 +89,15 @@ class ArrayLikeWrapper(Module):
 
 
 def unwrap_arraylikes(tree: PyTree[ArrayLikeWrapper]) -> PyTree[ArrayLike]:
-    """Unwrap ArrayLikeWrapper objects in a PyTree."""
-    return jt.map(lambda x: x.value, tree, is_leaf=is_type(ArrayLikeWrapper))
+    """Unwrap ArrayLikeWrapper objects in a PyTree.
+
+    Non-wrapper leaves are passed through unchanged.
+    """
+    return jt.map(
+        lambda x: x.value if isinstance(x, ArrayLikeWrapper) else x,
+        tree,
+        is_leaf=is_type(ArrayLikeWrapper),
+    )
 
 
 T = TypeVar("T")
@@ -110,7 +117,9 @@ def unwrap_arraylikes_and_labels(
             - "full": "/"-joined (same as "medium" for now)
     """
 
-    def _label_for(wrapper: ArrayLikeWrapper) -> Optional[str]:
+    def _label_for(wrapper: ArrayLikeWrapper | Any) -> Optional[str]:
+        if not isinstance(wrapper, ArrayLikeWrapper):
+            return None
         label = wrapper.label
         if label is None:
             return None
@@ -126,7 +135,9 @@ def unwrap_arraylikes_and_labels(
 
     return jtree.unzip(
         jt.map(
-            lambda x: (x.value, _label_for(x)),
+            lambda x: (x.value, _label_for(x))
+            if isinstance(x, ArrayLikeWrapper)
+            else (x, None),
             tree,
             is_leaf=is_type(ArrayLikeWrapper),
         )

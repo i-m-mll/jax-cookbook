@@ -1,6 +1,6 @@
 import pytest
 
-from jax_cookbook._func import allf, anyf, notf, wrap_to_accept_var_kwargs
+from jax_cookbook._func import allf, anyf, falsef, notf, truef, wrap_to_accept_var_kwargs
 
 
 def test_allf_includes_first_predicate():
@@ -23,6 +23,11 @@ def test_notf_negates():
     is_even = lambda x: x % 2 == 0
     assert notf(is_even)(2) is False
     assert notf(is_even)(3) is True
+
+
+def test_falsef_truef():
+    assert falsef(1) is False
+    assert truef(1) is True
 
 
 def test_wrap_to_accept_var_kwargs_drops_unknown_by_default():

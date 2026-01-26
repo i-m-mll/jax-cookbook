@@ -434,7 +434,7 @@ def move_level_to_outside(tree, level_type):
     _assert_uniform_tree(tree)
     leveldefs = ()
     subtree = tree
-    children = [True]  # TODO
+    children = [True]  # sentinel to enter loop
     leaf_type = None
     arity = None
 
@@ -461,7 +461,10 @@ def move_level_to_outside(tree, level_type):
 
     new_treedef = functools.reduce(lambda def1, def2: def1.compose(def2), leveldefs)
 
-    leaves = jt.leaves(tree, is_leaf=is_type(leaf_type))
+    def _is_leaf(x, root=tree):
+        return isinstance(x, leaf_type) and x is not root
+
+    leaves = jt.leaves(tree, is_leaf=_is_leaf)
     new_leaves = [x for xs in [leaves[i::arity] for i in range(arity)] for x in xs]
 
     return jt.unflatten(new_treedef, new_leaves)

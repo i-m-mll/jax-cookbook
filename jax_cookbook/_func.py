@@ -167,7 +167,7 @@ def is_type(*types_) -> Callable[[Any], bool]:
 
 def is_not_type(*types) -> Callable[[Any], bool]:
     """Returns a function that returns `True` if the input is not an instance of any of the given types."""
-    return compose(not_).then(is_type(*types))
+    return lambda x: not is_type(*types)(x)
 
 
 def identity(x):

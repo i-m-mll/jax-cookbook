@@ -13,6 +13,12 @@ theme:
 
 nav:
   - 'index.md'
+  - API:
+    - PyTrees: 'api/tree.md'
+    - Array leaves: 'api/array-leaves.md'
+    - Vmap: 'api/vmap.md'
+    - Functional: 'api/functional.md'
+    - Types: 'api/types.md'
   - Examples:
     - Filter-combine wrapper: 'examples/filter-combine.ipynb'
     - Tree array operations: 'examples/tree-array-ops.ipynb'

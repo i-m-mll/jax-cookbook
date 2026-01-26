@@ -73,15 +73,11 @@ class ArrayLikeWrapper(Module):
                         f"in value ({self.value.ndim})"
                     )
                 elif Ellipsis in self.axes_names:
-                    # ? Replace with None?
-                    pass
+                    raise ValueError(
+                        "axes_names cannot contain ellipsis when length matches array rank"
+                    )
             else:
                 raise ValueError("axes_names should not be provided for non-array values")
-
-            raise ValueError(
-                f"Length of axes_names ({len(self.axes_names)}) must match the number of "
-                "dimensions in value ({self.value.ndim})"
-            )
 
         if self.label is not None:
             if not isinstance(self.label, str) and not (
@@ -103,11 +99,34 @@ T = TypeVar("T")
 def unwrap_arraylikes_and_labels(
     tree: PyTree[ArrayLikeWrapper, "T"],
     label_fmt: Literal["short", "medium", "full"] = "medium",
-) -> tuple[PyTree[ArrayLike, "T"], PyTree[str, "T"]]:
-    """Unwrap ArrayLikeWrapper objects in a PyTree and return both values and labels."""
+) -> tuple[PyTree[ArrayLike, "T"], PyTree[Optional[str], "T"]]:
+    """Unwrap ArrayLikeWrapper objects in a PyTree and return both values and labels.
+
+    Notes:
+        If the wrapper's label is a string, it is returned as-is. If it is a sequence
+        of strings, then:
+            - "short": first element (or "" if empty)
+            - "medium": "/"-joined
+            - "full": "/"-joined (same as "medium" for now)
+    """
+
+    def _label_for(wrapper: ArrayLikeWrapper) -> Optional[str]:
+        label = wrapper.label
+        if label is None:
+            return None
+        if isinstance(label, str):
+            return label
+        if isinstance(label, Sequence):
+            if not label:
+                return ""
+            if label_fmt == "short":
+                return label[0]
+            return "/".join(label)
+        return str(label)
+
     return jtree.unzip(
         jt.map(
-            lambda x: (x.value, getattr(x.label, label_fmt)),
+            lambda x: (x.value, _label_for(x)),
             tree,
             is_leaf=is_type(ArrayLikeWrapper),
         )

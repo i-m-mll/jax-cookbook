@@ -1,17 +1,31 @@
-# Welcome to MkDocs
+# JAX Cookbook
 
-For full documentation visit [mkdocs.org](https://www.mkdocs.org).
+A small collection of PyTree utilities and Equinox-friendly helpers I reach for in JAX projects.
 
-## Commands
+## Install
 
-* `mkdocs new [dir-name]` - Create a new project.
-* `mkdocs serve` - Start the live-reloading docs server.
-* `mkdocs build` - Build the documentation site.
-* `mkdocs -h` - Print help message and exit.
+```
+pip install jax-cookbook
+```
 
-## Project layout
+## Quickstart
 
-    mkdocs.yml    # The configuration file.
-    docs/
-        index.md  # The documentation homepage.
-        ...       # Other markdown pages, images and other files.
+```python
+import jax.numpy as jnp
+import jax.tree as jt
+import equinox as eqx
+
+import jax_cookbook.tree as jct
+
+
+@jct.filter_wrap(eqx.is_array)
+def flatten_leaves(tree):
+    return jt.map(jnp.ravel, tree)
+
+
+tree = [jnp.zeros((3, 4)), "meta"]
+flattened = flatten_leaves(tree)
+# [jnp.zeros((12,)), "meta"]
+```
+
+Browse the API pages for the full set of tree, vmap, and functional helpers.

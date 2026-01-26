@@ -366,10 +366,10 @@ def test_nonuniform_detection():
     # (Pick first outer key and mutate its child mapping shape)
     assert isinstance(tree, dict)
     first_k = next(iter(tree))
-    bad = {"X": tree[first_k]["k0"], "Y": tree[first_k]["k1"], "Z": tree[first_k]["k2"]}  # type: ignore[index]
+    bad = tree[first_k][:2]  # shorten one list branch
     tree[first_k] = bad  # type: ignore[assignment]
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         rearrange_levels(tree, [list, dict])
 
 
@@ -425,3 +425,10 @@ def test_all_permutations_small(L):
         ref = _rearrange_reference(tree, target)
         assert _flatten(got) == _flatten(ref)
         assert jt.structure(got) == jt.structure(ref)
+
+
+def test_rearrange_uniform_tree_raises_on_non_uniform_tree():
+    # Different list lengths at the same level should be rejected.
+    tree = [[1, 2], [3]]
+    with pytest.raises(ValueError):
+        rearrange_levels(tree, [list])

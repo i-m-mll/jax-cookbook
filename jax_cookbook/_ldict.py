@@ -239,6 +239,11 @@ class LDictConstructor:
     def __repr__(self) -> str:
         return f"LDict.of({self.label})"
 
+    @property
+    def predicate(self) -> Callable[[Any], bool]:
+        """Predicate that matches LDicts with this constructor's label."""
+        return LDict.is_of(self.label)
+
     @overload
     def fromkeys(self, keys: Iterable[_K]) -> LDict[_K, None]: ...
     @overload

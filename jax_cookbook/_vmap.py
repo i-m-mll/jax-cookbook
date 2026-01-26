@@ -26,18 +26,23 @@ def vmap_multi(
         in_axes_sequence: Sequence of `in_axes` specifications, as they would be passed to `jax.vmap`.
             For example, to successively map over axes 0, 1, and 2 of a single array argument,
             pass `in_axes_sequence=(0, 0, 0)`.
+        out_axes_sequence: Optional sequence of `out_axes` specifications, one per vmap level.
         vmap_func: Transformation function to use.
     """
     func_v = func
 
-    # if out_axes_sequence is None:
-    #     out_axes_sequence = jt.map(lambda axis: eqx.if_array(axis=axis), in_axes_sequence)
-
-    # for in_axes, out_axes in zip(in_axes_sequence, out_axes_sequence):
-    #     func_v = vmap_func(func_v, in_axes=in_axes, out_axes=out_axes)
-
-    for in_axes in in_axes_sequence:
-        func_v = vmap_func(func_v, in_axes=in_axes)
+    if out_axes_sequence is None:
+        for in_axes in in_axes_sequence:
+            func_v = vmap_func(func_v, in_axes=in_axes)
+    else:
+        in_axes_list = list(in_axes_sequence)
+        out_axes_list = list(out_axes_sequence)
+        if len(in_axes_list) != len(out_axes_list):
+            raise ValueError(
+                "in_axes_sequence and out_axes_sequence must have the same length"
+            )
+        for in_axes, out_axes in zip(in_axes_list, out_axes_list):
+            func_v = vmap_func(func_v, in_axes=in_axes, out_axes=out_axes)
 
     return func_v
 

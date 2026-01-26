@@ -43,6 +43,7 @@ typing = [
 ]
 tests = [
     'coverage',
+    'chex',
     'pytest',
 ]
 
@@ -71,6 +72,7 @@ line-length = 88
 
 [dependency-groups]
 dev = [
+    "chex>=0.1.88",
     "pytest>=8.3.5",
 ]
 

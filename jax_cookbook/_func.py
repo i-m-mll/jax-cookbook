@@ -66,14 +66,14 @@ def allf(func: Pred, *funcs: Pred) -> Pred:
     This is useful when we want to satisfy any of a number of `is_leaf`-like conditions
     without writing another ugly lambda. For example:
 
-        `is_leaf=lambda x: is_module(x) or eqx.is_array(x)`
+        `is_leaf=lambda x: is_module(x) and eqx.is_array(x)`
 
-    becomes `is_leaf=anyf(is_module, eqx.is_array)`.
+    becomes `is_leaf=allf(is_module, eqx.is_array)`.
     """
     preds = (func,) + funcs
 
     def inner(*args: P.args, **kwargs: P.kwargs) -> bool:
-        return all(f(*args, **kwargs) for f in funcs)
+        return all(f(*args, **kwargs) for f in preds)
 
     # Metadata that makes sense for a composite
     inner.__name__ = "allf"
@@ -228,7 +228,7 @@ def wrap_to_accept_var_kwargs(
             unknown = set(kwargs) - allowed
             if unknown:
                 unknown_list = ", ".join(sorted(unknown))
-                logger.warning(
+                raise TypeError(
                     f"{func.__name__}() got unexpected keyword(s): {unknown_list}"
                 )
         filtered = {k: v for k, v in kwargs.items() if k in allowed}

@@ -13,7 +13,7 @@ import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TypeVar
 
 import equinox as eqx
 import jax.random as jr
@@ -26,6 +26,9 @@ from .misc import nested_dict_update
 from .tree import filter_wrap
 
 logger = logging.getLogger(__name__)
+
+
+T = TypeVar("T")
 
 
 def save_old(
@@ -73,7 +76,7 @@ def save(
     path: str | Path,
     tree: PyTree[eqx.Module],
     hyperparameters: Optional[dict] = None,
-    dump_fn: Callable = lambda f, hps: json.dump(hps, f, sort_keys=True),
+    dump_fn: Callable = json_dump,
 ) -> None:
     """Save a PyTree to disk along with hyperparameters used to generate it.
 

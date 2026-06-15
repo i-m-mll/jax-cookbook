@@ -5,6 +5,7 @@ import math
 import string
 from collections import namedtuple
 from collections.abc import Callable, Hashable, Sequence
+from dataclasses import dataclass
 from types import EllipsisType
 from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
 
@@ -80,13 +81,19 @@ def filter_map(f, tree, filter_func):
 def filter_spec_leaves(
     tree: PyTree[Any, "T"],
     leaf_func: Callable,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> PyTree[bool, "T"]:
-    """Returns a filter specification for tree leaves matching `leaf_func`."""
+    """Returns a filter specification for leaves selected by ``leaf_func``.
+
+    If ``leaf_func`` selects a subtree rather than a single leaf, the selected
+    subtree is expanded to matching ``True`` leaves. This produces masks that
+    can be passed to filtering APIs which expect leaf-level boolean specs.
+    """
     filter_spec = jt.map(lambda _: False, tree)
     filter_spec = eqx.tree_at(
         leaf_func,
         filter_spec,
-        replace_fn=lambda x: True,
+        replace_fn=lambda x: jt.map(lambda _: True, x, is_leaf=is_leaf),
     )
     return filter_spec
 
@@ -243,9 +250,14 @@ def array_set(
         A PyTree with the same structure as `tree`, where the array leaves of `items` have been inserted as the `idx`-th elements of the corresponding array leaves of `tree`.
     """
     arrays = eqx.filter(tree, eqx.is_array)
-    vals_update, other_update = eqx.partition(values, jt.map(lambda x: x is not None, arrays))
+    is_none_leaf = lambda x: x is None
+    vals_update, other_update = eqx.partition(
+        values,
+        jt.map(lambda x: x is not None, arrays, is_leaf=is_none_leaf),
+        is_leaf=is_none_leaf,
+    )
     arrays_update = jt.map(lambda xs, x: xs.at[idx].set(x), arrays, vals_update)
-    return eqx.combine(arrays_update, other_update)
+    return eqx.combine(arrays_update, other_update, is_leaf=is_none_leaf)
 
 
 @filter_wrap(eqx.is_array)
@@ -750,6 +762,55 @@ def call(
     return eqx.combine(callables_values, other_values, is_leaf=is_leaf)
 
 
+def call_with_keys(
+    tree: PyTree[Any, "T"],
+    *args: Any,
+    key: PRNGKeyArray,
+    exclude: Callable[[Any], bool] = lambda _: False,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+    key_fn: Optional[Callable[[Any, PRNGKeyArray], PRNGKeyArray]] = None,
+    **kwargs: Any,
+) -> PyTree[Any, "T"]:
+    """Call callable leaves with per-leaf random keys.
+
+    Args:
+        tree: Any PyTree.
+        *args: Positional arguments to pass to each callable leaf.
+        key: A JAX PRNG key split once for each callable leaf.
+        exclude: Predicate for callable leaves that should be passed through.
+        is_leaf: Optional PyTree leaf predicate.
+        key_fn: Optional ``(callable_leaf, per_leaf_key) -> key`` hook. Use this
+            to replace or transform keys for selected leaves without encoding
+            policy in the helper.
+        **kwargs: Keyword arguments to pass to each callable leaf.
+
+    Returns:
+        A PyTree with callable leaves replaced by their return values.
+    """
+    callables, other_values = eqx.partition(
+        tree,
+        lambda x: isinstance(x, Callable) and not exclude(x),
+        is_leaf=is_leaf,
+    )
+    keys = random_split_like_tree(key, callables, is_leaf=is_leaf)
+
+    if key_fn is not None:
+        keys = jt.map(
+            lambda fn, per_leaf_key: key_fn(fn, per_leaf_key),
+            callables,
+            keys,
+            is_leaf=is_leaf,
+        )
+
+    callables_values = jt.map(
+        lambda fn, fn_key: fn(*args, **kwargs, key=fn_key),
+        callables,
+        keys,
+        is_leaf=is_leaf,
+    )
+    return eqx.combine(callables_values, other_values, is_leaf=is_leaf)
+
+
 def array_bytes(tree: PyTree, duplicates: bool = False) -> int:
     """Returns the total bytes of memory over all array leaves of a PyTree.
 
@@ -1226,42 +1287,28 @@ def _expand_spec_to_target(spec: Sequence[LevelSpec], current: list[Any]) -> lis
         return list(spec_norm) + rest
 
 
-def _order_from_target(probe_nodes: list[Any], target: list[Any]) -> list[int]:
-    """Greedily match each target descriptor to the next unused axis in probe_nodes."""
-    depth = len(probe_nodes)
-    if len(target) != depth:
-        raise AssertionError("Target length must equal number of probed levels.")
-    used = [False] * depth
-    order: list[int] = []
-    for tok in target:
-        matcher = _make_matcher(
-            tok if tok is not Ellipsis else target[0]
-        )  # tok is never Ellipsis here
-        for i, node in enumerate(probe_nodes):
-            if not used[i] and matcher(node):
-                used[i] = True
-                order.append(i)
-                break
-        else:
-            raise ValueError(f"Level {tok!r} not found (or already used) in tree.")
-    return order
+@dataclass(frozen=True)
+class _RearrangedLeaf:
+    value: Any
 
 
-def _compose_treedefs_in_order(treedefs: list[jtu.PyTreeDef], order: list[int]) -> jtu.PyTreeDef:
-    td = treedefs[order[0]]
-    for idx in order[1:]:
-        td = td.compose(treedefs[idx])  # outer→inner
-    return td
+def _move_level_to_front(
+    tree: PyTree,
+    descriptor: LevelSpec,
+    *,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+) -> PyTree:
+    outer_treedef = jt.structure(tree, is_leaf=_make_matcher(descriptor))
+    if is_leaf is None:
+        return jt.transpose(outer_treedef, None, tree)
 
-
-def _leaf_permutation_for_axes(sizes: list[int], order: list[int]) -> np.ndarray:
-    """Index map idx s.t. new_leaves = [old_leaves[i] for i in idx]."""
-    if not sizes:
-        return np.array([], dtype=int)
-    N = math.prod(sizes)
-    if N == 0:
-        return np.array([], dtype=int)
-    return np.arange(N, dtype=int).reshape(sizes).transpose(order).ravel()
+    wrapped = jt.map(lambda x: _RearrangedLeaf(x), tree, is_leaf=is_leaf)
+    transposed = jt.transpose(outer_treedef, None, wrapped)
+    return jt.map(
+        lambda x: x.value if isinstance(x, _RearrangedLeaf) else x,
+        transposed,
+        is_leaf=lambda x: isinstance(x, _RearrangedLeaf),
+    )
 
 
 def rearrange_uniform_tree(
@@ -1291,32 +1338,45 @@ def rearrange_uniform_tree(
             • at most one `Ellipsis`/`...` (keeps the remaining levels in original relative order;
             the order is defined by `tree_level_types(tree, is_leaf)`).
     """
-    # Probe one representative outer→inner path.
-    probe_nodes, treedefs = first_path_node_structure(tree, is_leaf=is_leaf)
-    sizes = [td.num_leaves for td in treedefs]
-    depth = len(treedefs)
-    if depth == 0 or not sizes or math.prod(sizes) == 0:
+    _, treedefs = first_path_node_structure(tree, is_leaf=is_leaf)
+    sizes = [treedef.num_leaves for treedef in treedefs]
+    if not treedefs or not sizes or math.prod(sizes) == 0:
         return tree
 
-    # Use your current ordering to expand spec → full target (no Ellipsis).
-    current = tree_level_types(tree, is_leaf=is_leaf)  # provided elsewhere in your module
+    leaves, _ = jt.flatten(tree, is_leaf=is_leaf)
+    if len(leaves) != math.prod(sizes):
+        raise AssertionError(
+            f"Uniformity mismatch: {len(leaves)} leaves vs product(sizes)={math.prod(sizes)}. "
+            "Ensure the tree is uniform and `is_leaf` marks the intended boundary."
+        )
+
+    current = tree_level_types(tree, is_leaf=is_leaf)
     target = _expand_spec_to_target(spec, current)
 
-    # Greedily map target descriptors onto the probed axes to get a stable order.
-    order = _order_from_target(probe_nodes, target)
+    levels = list(current)
+    placed: list[Any] = []
 
-    # Compose the treedef and apply a single global leaf permutation.
-    td_target = _compose_treedefs_in_order(treedefs, order)
+    for want in target:
+        want_key = _descriptor_key(want)
+        if _descriptor_key(levels[len(placed)]) == want_key:
+            placed.append(want)
+            continue
 
-    leaves, _ = jt.flatten(tree, is_leaf=is_leaf)
-    N = len(leaves)
-    assert N == math.prod(sizes), (
-        f"Uniformity mismatch: {N} leaves vs product(sizes)={math.prod(sizes)}. "
-        "Ensure the tree is uniform and `is_leaf` marks the intended boundary."
-    )
-    idx = _leaf_permutation_for_axes(sizes, order)
-    new_leaves = [leaves[i] for i in idx.tolist()]
-    return jt.unflatten(td_target, new_leaves)
+        idx = next(i for i, descriptor in enumerate(levels) if _descriptor_key(descriptor) == want_key)
+        tree = _move_level_to_front(tree, want, is_leaf=is_leaf)
+        levels = [levels[idx]] + levels[:idx] + levels[idx + 1 :]
+
+        for prev in reversed(placed):
+            prev_key = _descriptor_key(prev)
+            prev_idx = next(
+                i for i, descriptor in enumerate(levels) if _descriptor_key(descriptor) == prev_key
+            )
+            tree = _move_level_to_front(tree, prev, is_leaf=is_leaf)
+            levels = [levels[prev_idx]] + levels[:prev_idx] + levels[prev_idx + 1 :]
+
+        placed.append(want)
+
+    return tree
 
 
 # def swap_adjacent_levels(

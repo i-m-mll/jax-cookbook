@@ -359,15 +359,12 @@ def test_empty_containers_are_noops():
 
 
 def test_nonuniform_detection():
-    # Build a nonuniform tree by changing keys at one inner dict
+    # Build a nonuniform tree by changing arity at one inner list.
     levels, sizes = [dict, list], [2, 3]
     tree = _build_uniform_tree(levels, sizes)
-    # Corrupt uniformity: change keys of one branch
-    # (Pick first outer key and mutate its child mapping shape)
     assert isinstance(tree, dict)
     first_k = next(iter(tree))
-    bad = {"X": tree[first_k]["k0"], "Y": tree[first_k]["k1"], "Z": tree[first_k]["k2"]}  # type: ignore[index]
-    tree[first_k] = bad  # type: ignore[assignment]
+    tree[first_k] = tree[first_k][:2]  # type: ignore[index]
 
     with pytest.raises(AssertionError):
         rearrange_levels(tree, [list, dict])
@@ -411,8 +408,9 @@ def test_spec_forms(levels, sizes, spec):
 @pytest.mark.parametrize("L", [1, 2, 3, 4])
 def test_all_permutations_small(L):
     # Exhaustively check all permutations of level orders for small L.
-    # Use builtin types to avoid dependency on LDict.
-    levels = [list, tuple, dict, list][:L]
+    # Use unique level descriptors because type-only specs cannot distinguish
+    # repeated levels of the same container type.
+    levels = [list, tuple, dict, _ld("foo")][:L]
     sizes = [2, 2, 2, 2][:L]
     tree = _build_uniform_tree(levels, sizes)
 

@@ -182,9 +182,7 @@ _VAR_KW_PARAM = inspect.Parameter(
 )
 
 
-def wrap_to_accept_var_kwargs(
-    func: Callable, *, strict=False, allowed_extra: Sequence[str] = ()
-):
+def wrap_to_accept_var_kwargs(func: Callable, *, strict=False, allowed_extra: Sequence[str] = ()):
     """
     Wrap `func` so you can pass arbitrary **kwargs.
     Unknown kwargs are dropped by default; set strict=True to raise instead.
@@ -199,9 +197,7 @@ def wrap_to_accept_var_kwargs(
     except (ValueError, TypeError) as e:
         # Builtins or weird callables we can't introspect.
         if strict:
-            raise ValueError(
-                f"Cannot introspect {func} to determine keyword arguments."
-            ) from e
+            raise ValueError(f"Cannot introspect {func} to determine keyword arguments.") from e
         logger.warning(
             f"Cannot introspect {func} to determine keyword arguments. "
             "Returning unwrapped function."
@@ -216,8 +212,7 @@ def wrap_to_accept_var_kwargs(
     allowed = {
         name
         for name, p in sig.parameters.items()
-        if p.kind
-        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     } | set(allowed_extra)
 
     @wraps(func)
@@ -228,24 +223,41 @@ def wrap_to_accept_var_kwargs(
             unknown = set(kwargs) - allowed
             if unknown:
                 unknown_list = ", ".join(sorted(unknown))
-                raise TypeError(
-                    f"{func.__name__}() got unexpected keyword(s): {unknown_list}"
-                )
+                raise TypeError(f"{func.__name__}() got unexpected keyword(s): {unknown_list}")
         filtered = {k: v for k, v in kwargs.items() if k in allowed}
         return func(*args, **filtered)
 
-    wrapped.__signature__ = sig.replace(
-        parameters=[*sig.parameters.values(), _VAR_KW_PARAM]
-    )
+    wrapped.__signature__ = sig.replace(parameters=[*sig.parameters.values(), _VAR_KW_PARAM])
     return wrapped
 
 
-def _walk(v: Any) -> list[Any]:
+def _walk(v: Any, _seen: Set[int] | None = None) -> list[Any]:
     """
     Yield *v* itself **plus** all its PyTree leaves (if any),
     with duplicates removed (by object identity).
     """
-    items = jt.leaves(v)
+    if _seen is None:
+        _seen = set()
+    if id(v) in _seen:
+        return []
+    _seen.add(id(v))
+
+    try:
+        items = jt.leaves(v)
+    except ValueError as exc:
+        if not isinstance(v, Mapping) or "sorting pytree dictionary keys" not in str(exc):
+            raise
+        ordered_items = sorted(v.items(), key=lambda item: _bytes_for_constant(item[0]))
+        items = [_bytes_for_constant(key) for key, _ in ordered_items]
+        for _, value in ordered_items:
+            items.extend(_walk(value, _seen))
+    else:
+        if isinstance(v, Mapping):
+            try:
+                ordered_keys = sorted(v)
+            except TypeError:
+                ordered_keys = sorted(v, key=_bytes_for_constant)
+            items = [_bytes_for_constant(key) for key in ordered_keys] + items
 
     if callable(v):
         items.append(v)
@@ -365,9 +377,7 @@ def _collect_parts(
         raise TypeError(f"{obj!r} is not a pure-Python callable")
 
     # 1) byte-code + nested constants ------------------------------------ #
-    _collect_parts(
-        func.__code__, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore
-    )
+    _collect_parts(func.__code__, parts, _memo_obj=_memo_obj, _memo_code=_memo_code, ignore=ignore)
 
     # 2) decorators ------------------------------------------------------- #
     deco_bytes = b""

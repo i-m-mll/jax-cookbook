@@ -38,7 +38,7 @@ def test_part_by_idx():
     assert jnp.array_equal(remainder, jnp.array([0, 2, 4]))
 
 
-def test_array_set_updates_arrays_only():
+def test_array_set_updates_matching_leaves():
     tree = (jnp.zeros((3, 2)), {"x": jnp.ones((3, 2))}, "keep")
     values = (jnp.full((2,), 5.0), {"x": jnp.full((2,), 7.0)}, "ignored")
     out = array_set(tree, values, idx=1)
@@ -48,7 +48,26 @@ def test_array_set_updates_arrays_only():
 
     chex.assert_trees_all_close(out[0], expected0)
     chex.assert_trees_all_close(out[1]["x"], expected1)
-    assert out[2] == "keep"
+    assert out[2] == "ignored"
+
+
+def test_array_set_replaces_none_and_non_array_leaves():
+    tree = {
+        "x": jnp.array([[0, 1], [2, 3]]),
+        "none": None,
+        "label": "old",
+    }
+    values = {
+        "x": jnp.array([9, 8]),
+        "none": "now-set",
+        "label": "new",
+    }
+
+    out = array_set(tree, values, idx=1)
+
+    assert jnp.array_equal(out["x"], jnp.array([[0, 1], [9, 8]]))
+    assert out["none"] == "now-set"
+    assert out["label"] == "new"
 
 
 def test_array_set_raises_on_missing_array_values():

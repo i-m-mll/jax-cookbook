@@ -80,13 +80,19 @@ def filter_map(f, tree, filter_func):
 def filter_spec_leaves(
     tree: PyTree[Any, "T"],
     leaf_func: Callable,
+    is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> PyTree[bool, "T"]:
-    """Returns a filter specification for tree leaves matching `leaf_func`."""
+    """Returns a filter specification for leaves selected by ``leaf_func``.
+
+    If ``leaf_func`` selects a subtree rather than a single leaf, the selected
+    subtree is expanded to matching ``True`` leaves. This produces masks that
+    can be passed to filtering APIs which expect leaf-level boolean specs.
+    """
     filter_spec = jt.map(lambda _: False, tree)
     filter_spec = eqx.tree_at(
         leaf_func,
         filter_spec,
-        replace_fn=lambda x: True,
+        replace_fn=lambda x: jt.map(lambda _: True, x, is_leaf=is_leaf),
     )
     return filter_spec
 
@@ -224,7 +230,7 @@ def array_set(
 ) -> PyTree[Union[Any, Shaped[Array, "batch *?dims"]], "T"]:
     """Perform an out-of-place update of each array leaf of a PyTree.
 
-    Non-array leaves are left unchanged.
+    Non-array leaves are replaced by their matching leaves in `values`.
 
     For example, if `tree` is a PyTree of states over time, whose first dimension
     is the time step, and `items` is a PyTree of states for a single time step,
@@ -242,18 +248,18 @@ def array_set(
     Returns:
         A PyTree with the same structure as `tree`, where the array leaves of `items` have been inserted as the `idx`-th elements of the corresponding array leaves of `tree`.
     """
-    arrays, non_arrays = eqx.partition(tree, eqx.is_array)
-    values_arrays, _ = eqx.partition(values, eqx.is_array)
 
-    def _set(xs, x):
-        if xs is None:
-            return None
-        if x is None:
+    def is_none_leaf(x):
+        return x is None
+
+    def _set_or_replace(current, value):
+        if not eqx.is_array(current):
+            return value
+        if value is None:
             raise ValueError("values is missing an array leaf matching tree")
-        return xs.at[idx].set(x)
+        return current.at[idx].set(value)
 
-    arrays_update = jt.map(_set, arrays, values_arrays)
-    return eqx.combine(arrays_update, non_arrays)
+    return jt.map(_set_or_replace, tree, values, is_leaf=is_none_leaf)
 
 
 @filter_wrap(eqx.is_array)

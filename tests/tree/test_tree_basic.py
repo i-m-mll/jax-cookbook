@@ -43,6 +43,26 @@ def test_filter_spec_leaves():
     assert spec == {"a": [False, True], "b": False}
 
 
+def test_filter_spec_leaves_expands_selected_subtree():
+    tree = {"params": {"w": 1, "b": 2}, "static": 3}
+
+    spec = jct.filter_spec_leaves(tree, lambda t: t["params"])
+
+    assert spec == {"params": {"w": True, "b": True}, "static": False}
+
+
+def test_filter_spec_leaves_respects_is_leaf_boundary():
+    tree = {"params": [1, 2], "static": 3}
+
+    spec = jct.filter_spec_leaves(
+        tree,
+        lambda t: t["params"],
+        is_leaf=lambda x: isinstance(x, list),
+    )
+
+    assert spec == {"params": True, "static": False}
+
+
 def test_first_leaf_and_shape():
     tree = [jnp.zeros((2, 3)), jnp.ones((1,))]
     assert jct.first_leaf(tree).shape == (2, 3)
